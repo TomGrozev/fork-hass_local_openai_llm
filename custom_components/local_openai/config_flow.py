@@ -7,6 +7,8 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
+    SOURCE_USER,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
@@ -88,17 +90,26 @@ from .const import (
     CONF_BASE_URL,
     CONF_CHAT_TEMPLATE_KWARGS,
     CONF_CHAT_TEMPLATE_OPTS,
+    CONF_CHECK_INS_ENABLED,
+    CONF_CHECK_INS_ENABLED_DEFAULT,
+    CONF_CHECKIN_GAP_MS,
+    CONF_CHECKIN_GAP_MS_DEFAULT,
     CONF_CONTENT_INJECTION_METHOD,
     CONF_CONTENT_INJECTION_METHODS,
     CONF_CUSTOM_HEADERS,
     CONF_DEEPSEEK_CONFIG,
+    CONF_EXPRESSION_TAGS,
+    CONF_EXPRESSION_TAGS_DEFAULT,
     CONF_GENERIC_CONFIG,
     CONF_GOOGLE_GEMINI_CONFIG,
+    CONF_GRACE_MS,
+    CONF_GRACE_MS_DEFAULT,
     CONF_LLAMACPP_CONFIG,
     CONF_LOCALAI_CONFIG,
     CONF_MAX_MESSAGE_HISTORY,
     CONF_PARALLEL_TOOL_CALLS,
     CONF_PASS_SESSION_ID,
+    CONF_RECOMMENDED,
     CONF_REQUEST_BODY_OPTS,
     CONF_REQUEST_BODY_PARAMETERS,
     CONF_SERVER_HEADERS,
@@ -108,6 +119,8 @@ from .const import (
     CONF_STRIP_EMOJIS,
     CONF_TEMPERATURE,
     CONF_VLLM_CONFIG,
+    CONF_WATCHDOG_MAX_EXTRAS,
+    CONF_WATCHDOG_MAX_EXTRAS_DEFAULT,
     CONF_WEAVIATE_API_KEY,
     CONF_WEAVIATE_CLASS_NAME,
     CONF_WEAVIATE_DEFAULT_CLASS_NAME,
@@ -586,6 +599,9 @@ class LocalAiSubentryFlowHandler(ConfigSubentryFlow):
 class ConversationFlowHandler(LocalAiSubentryFlowHandler):
     """Handle subentry flow."""
 
+    # Recommended-step input held between the recommended form and async_step_advanced.
+    _recommended_input: dict[str, Any]
+
     async def get_schema(self) -> vol.Schema:
         """Get the schema for the conversation subentry form."""
         llm_apis = self.get_llm_apis()
@@ -673,6 +689,20 @@ class ConversationFlowHandler(LocalAiSubentryFlowHandler):
                 options=SectionConfig(collapsed=True),
                 schema=_key_value_template_section(CONF_REQUEST_BODY_PARAMETERS),
             ),
+            # Thinking Voice check-in fields (recommended view).
+            vol.Required(
+                CONF_CHECK_INS_ENABLED,
+                default=CONF_CHECK_INS_ENABLED_DEFAULT,
+            ): bool,
+            vol.Required(
+                CONF_EXPRESSION_TAGS,
+                default=CONF_EXPRESSION_TAGS_DEFAULT,
+            ): bool,
+            # Unchecked: show the advanced check-in timing step (get_advanced_schema).
+            vol.Required(
+                CONF_RECOMMENDED,
+                default=RECOMMENDED_CONVERSATION_OPTIONS[CONF_RECOMMENDED],
+            ): bool,
         }
 
         server_type_schema_fields = _get_conversation_config_schema(server_type)
@@ -736,6 +766,79 @@ class ConversationFlowHandler(LocalAiSubentryFlowHandler):
 
         return vol.Schema(schema)
 
+    async def get_advanced_schema(self) -> vol.Schema:
+        """Get the schema for the advanced (check-in timing) form of the conversation subentry."""
+        return vol.Schema(
+            {
+                vol.Optional(
+                    CONF_GRACE_MS,
+                    default=CONF_GRACE_MS_DEFAULT,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        step=50,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="ms",
+                    ),
+                ),
+                vol.Optional(
+                    CONF_CHECKIN_GAP_MS,
+                    default=CONF_CHECKIN_GAP_MS_DEFAULT,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        step=100,
+                        mode=NumberSelectorMode.BOX,
+                        unit_of_measurement="ms",
+                    ),
+                ),
+                vol.Optional(
+                    CONF_WATCHDOG_MAX_EXTRAS,
+                    default=CONF_WATCHDOG_MAX_EXTRAS_DEFAULT,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        step=1,
+                        mode=NumberSelectorMode.BOX,
+                    ),
+                ),
+            }
+        )
+
+    async def _prepare_and_save(
+        self,
+        data: dict[str, Any],
+        errors: dict[str, str],
+    ) -> SubentryFlowResult | None:
+        """Run the Weaviate check, then create or update the subentry; None on Weaviate failure."""
+        try:
+            weaviate_opts = {
+                **self._get_entry().data.get(CONF_WEAVIATE_OPTIONS, {}),
+                **data.get(CONF_WEAVIATE_OPTIONS, {}),
+            }
+            await prepare_weaviate_class(
+                hass=self.hass,
+                weaviate_opts=weaviate_opts,
+            )
+        except WeaviateError as err:
+            LOGGER.exception(f"Unexpected exception: {err}")
+            errors["base"] = "cannot_connect_weaviate"
+            return None
+
+        if self.source == SOURCE_USER:
+            return self.async_create_entry(
+                title=(
+                    f"{self._get_entry().title}: "
+                    f"{self.strip_model_pathing(data.get(CONF_MODEL, 'Local'))} AI Agent"
+                ),
+                data=data,
+            )
+        return self.async_update_and_abort(
+            self._get_entry(),
+            self._get_reconfigure_subentry(),
+            data=data,
+        )
+
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
@@ -754,34 +857,55 @@ class ConversationFlowHandler(LocalAiSubentryFlowHandler):
             else:
                 if not user_input.get(CONF_LLM_HASS_API):
                     user_input.pop(CONF_LLM_HASS_API, None)
-                model_name = self.strip_model_pathing(
-                    user_input.get(CONF_MODEL, "Local"),
-                )
-
-                try:
-                    weaviate_opts = {
-                        **self._get_entry().data.get(CONF_WEAVIATE_OPTIONS, {}),
-                        **user_input.get(CONF_WEAVIATE_OPTIONS, {}),
-                    }
-                    await prepare_weaviate_class(
-                        hass=self.hass,
-                        weaviate_opts=weaviate_opts,
-                    )
-                except WeaviateError as err:
-                    LOGGER.exception(f"Unexpected exception: {err}")
-                    errors["base"] = "cannot_connect_weaviate"
-                else:
-                    server_name = self._get_entry().title
-                    return self.async_create_entry(
-                        title=f"{server_name}: {model_name} AI Agent",
-                        data=user_input,
-                    )
+                if not user_input.get(CONF_RECOMMENDED, True):
+                    # Defer creation until the advanced timing options are collected.
+                    self._recommended_input = user_input
+                    return await self.async_step_advanced()
+                if (
+                    result := await self._prepare_and_save(user_input, errors)
+                ) is not None:
+                    return result
 
         return self.async_show_form(
             step_id="user",
             data_schema=await self.get_schema(),
             errors=errors,
             description_placeholders=description_placeholders,
+        )
+
+    async def async_step_advanced(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> SubentryFlowResult:
+        """
+        Collect the advanced check-in timing options, then create or update the subentry.
+
+        Reached from async_step_user / async_step_reconfigure when the `recommended` box is
+        unchecked. `self._recommended_input` holds the recommended-step input; the submitted
+        timing values are merged onto it before the subentry is created/updated.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            # The NumberSelector produces floats; timings are whole milliseconds/counts.
+            for key in (CONF_GRACE_MS, CONF_CHECKIN_GAP_MS, CONF_WATCHDOG_MAX_EXTRAS):
+                if key in user_input:
+                    user_input[key] = int(user_input[key])
+            data = {**self._recommended_input, **user_input}
+            if (result := await self._prepare_and_save(data, errors)) is not None:
+                return result
+
+        schema = await self.get_advanced_schema()
+        if self.source == SOURCE_RECONFIGURE:
+            schema = self.add_suggested_values_to_schema(
+                schema,
+                self._get_reconfigure_subentry().data,
+            )
+
+        return self.async_show_form(
+            step_id="advanced",
+            data_schema=schema,
+            errors=errors,
         )
 
     async def async_step_reconfigure(
@@ -802,25 +926,15 @@ class ConversationFlowHandler(LocalAiSubentryFlowHandler):
             else:
                 if not user_input.get(CONF_LLM_HASS_API):
                     user_input.pop(CONF_LLM_HASS_API, None)
+                if not user_input.get(CONF_RECOMMENDED, True):
+                    # Defer the update until the advanced timing options are collected.
+                    self._recommended_input = user_input
+                    return await self.async_step_advanced()
 
-                try:
-                    weaviate_opts = {
-                        **self._get_entry().data.get(CONF_WEAVIATE_OPTIONS, {}),
-                        **user_input.get(CONF_WEAVIATE_OPTIONS, {}),
-                    }
-                    await prepare_weaviate_class(
-                        hass=self.hass,
-                        weaviate_opts=weaviate_opts,
-                    )
-                except WeaviateError as err:
-                    LOGGER.exception(f"Unexpected exception: {err}")
-                    errors["base"] = "cannot_connect_weaviate"
-                else:
-                    return self.async_update_and_abort(
-                        self._get_entry(),
-                        self._get_reconfigure_subentry(),
-                        data=user_input,
-                    )
+                if (
+                    result := await self._prepare_and_save(user_input, errors)
+                ) is not None:
+                    return result
 
         options = self._get_reconfigure_subentry().data.copy()
 

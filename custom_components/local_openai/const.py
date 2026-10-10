@@ -100,6 +100,20 @@ CONF_WEAVIATE_DEFAULT_MAX_RESULTS = 2
 CONF_WEAVIATE_DEFAULT_HYBRID_SEARCH_ALPHA = 0.5
 CONF_WEAVIATE_MAX_RESULTS_MAX = 10
 
+# Thinking Voice check-in options (per conversation agent, conversation subentry).
+# All optional: read via `.get(key, default)` so subentries without them need no
+# migration. `check_ins_enabled` is the master all-or-nothing toggle.
+CONF_CHECK_INS_ENABLED = "check_ins_enabled"
+CONF_CHECK_INS_ENABLED_DEFAULT = True
+CONF_EXPRESSION_TAGS = "expression_tags"
+CONF_EXPRESSION_TAGS_DEFAULT = False
+CONF_GRACE_MS = "grace_ms"
+CONF_GRACE_MS_DEFAULT = 500
+CONF_CHECKIN_GAP_MS = "checkin_gap_ms"
+CONF_CHECKIN_GAP_MS_DEFAULT = 1500
+CONF_WATCHDOG_MAX_EXTRAS = "watchdog_max_extras"
+CONF_WATCHDOG_MAX_EXTRAS_DEFAULT = 2
+
 RECOMMENDED_CONVERSATION_OPTIONS = {
     CONF_RECOMMENDED: True,
     CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 # Mock turbojpeg BEFORE any HA imports
 sys.modules["turbojpeg"] = MagicMock()
 sys.modules["turbojpeg.TurboJPEG"] = MagicMock()
+
+from typing import TYPE_CHECKING, Any  # noqa: E402
 
 import pytest  # noqa: E402
 from types import MappingProxyType  # noqa: E402
@@ -35,26 +37,55 @@ from custom_components.local_openai.const import (  # noqa: E402
 )
 
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    ConfigEntryFactory = Callable[..., Awaitable[ConfigEntry]]
+
+
 @pytest.fixture
-async def mock_config_entry(hass: HomeAssistant) -> ConfigEntry:
+async def config_entry_factory(
+    hass: HomeAssistant,
+) -> ConfigEntryFactory:
+    """Build and register a loaded config entry with a stubbed runtime client."""
+
+    async def _factory(
+        *,
+        title: str = "Test Server",
+        data: dict[str, Any] | None = None,
+        subentries_data: list[dict[str, Any]] | None = None,
+        stub_models: bool = False,
+    ) -> ConfigEntry:
+        """Create the entry and register it against ``hass``."""
+        entry = ConfigEntry(
+            domain="local_openai",
+            title=title,
+            data={CONF_MODEL: "test-model"} if data is None else data,
+            source="user",
+            state=ConfigEntryState.LOADED,
+            version=1,
+            minor_version=1,
+            discovery_keys=MappingProxyType({}),
+            options=None,
+            subentries_data=subentries_data,
+            unique_id=None,
+        )
+        mock_client = MagicMock()
+        if stub_models:
+            mock_client.models.list = AsyncMock(return_value=MagicMock(data=[]))
+        entry.runtime_data = mock_client
+        hass.config_entries._entries[entry.entry_id] = entry
+        return entry
+
+    return _factory
+
+
+@pytest.fixture
+async def mock_config_entry(
+    config_entry_factory: ConfigEntryFactory,
+) -> ConfigEntry:
     """Create a mock config_entry."""
-    entry = ConfigEntry(
-        domain="local_openai",
-        title="Test Server",
-        data={CONF_MODEL: "test-model"},
-        source="user",
-        state=ConfigEntryState.LOADED,
-        version=1,
-        minor_version=1,
-        discovery_keys=MappingProxyType({}),
-        options=None,
-        subentries_data=None,
-        unique_id=None,
-    )
-    mock_client = MagicMock()
-    entry.runtime_data = mock_client
-    hass.config_entries._entries[entry.entry_id] = entry
-    return entry
+    return await config_entry_factory()
 
 
 @pytest.fixture

@@ -108,6 +108,7 @@
       "step": {
         "user": {
           "title": "Configure the new conversation agent",
+          "description": "A streaming-input TTS engine (for example ElevenLabs, Google, or Nabu Casa cloud) is recommended: only then does the instant check-in produce early audio. On other engines the check-ins still play, but only after the answer has been buffered.",
           "data": {
             "model": "Model",
             "prompt": "System Prompt",
@@ -118,7 +119,10 @@
             "max_message_history": "Max previous conversation rounds to include",
             "parallel_tool_calls": "Parallel tool calling",
             "content_injection_method": "Date/Time context injection role",
-            "always_continue_conversation": "Always continue conversation"
+            "always_continue_conversation": "Always continue conversation",
+            "check_ins_enabled": "Instant check-ins",
+            "expression_tags": "Pass expression tags to TTS",
+            "recommended": "Use recommended settings"
           },
           "data_description": {
             "model": "The model to use for the conversation agent",
@@ -127,7 +131,10 @@
             "parallel_tool_calls": "Allow the model to use multiple tools in a single turn",
             "temperature": "Lower for more predictable responses, higher for more randomness",
             "content_injection_method": "The message role to insert dynamic content as. See the readme for details",
-            "always_continue_conversation": "Voice assistants will always be prompted to continue the conversation"
+            "always_continue_conversation": "Voice assistants will always be prompted to continue the conversation",
+            "check_ins_enabled": "Speak a short, mood-tagged opener and mid-chain check-ins to cover the LLM's thinking time. Off falls back to a plain streaming agent.",
+            "expression_tags": "Only enable if your TTS engine understands inline [mood] tags (for example Soniox TTS or ElevenLabs v3); otherwise the tags are stripped.",
+            "recommended": "Leave on to keep the default check-in timing. Uncheck to tune it."
           },
           "sections": {
             "chat_template_opts": {
@@ -212,7 +219,10 @@
             "max_message_history": "Max previous conversation rounds to include",
             "parallel_tool_calls": "Parallel tool calling",
             "content_injection_method": "Date/Time context injection role",
-            "always_continue_conversation": "Always continue conversation"
+            "always_continue_conversation": "Always continue conversation",
+            "check_ins_enabled": "Instant check-ins",
+            "expression_tags": "Pass expression tags to TTS",
+            "recommended": "Use recommended settings"
           },
           "data_description": {
             "model": "The model to use for the conversation agent",
@@ -221,7 +231,10 @@
             "parallel_tool_calls": "Allow the model to use multiple tools in a single turn",
             "temperature": "Lower for more predictable responses, higher for more randomness",
             "content_injection_method": "The message role to insert dynamic content as. See the readme for details",
-            "always_continue_conversation": "Voice assistants will always be prompted to continue the conversation"
+            "always_continue_conversation": "Voice assistants will always be prompted to continue the conversation",
+            "check_ins_enabled": "Speak a short, mood-tagged opener and mid-chain check-ins to cover the LLM's thinking time. Off falls back to a plain streaming agent.",
+            "expression_tags": "Only enable if your TTS engine understands inline [mood] tags (for example Soniox TTS or ElevenLabs v3); otherwise the tags are stripped.",
+            "recommended": "Leave on to keep the default check-in timing. Uncheck to tune it."
           },
           "sections": {
             "chat_template_opts": {
@@ -292,6 +305,19 @@
                 "weaviate_hybrid_search_alpha": "Balance between 0 for pure keyword search, and 1 for pure vector similarity search"
               }
             }
+          }
+        },
+        "advanced": {
+          "title": "Advanced check-in timing",
+          "data": {
+            "grace_ms": "Grace window",
+            "checkin_gap_ms": "Check-in spacing",
+            "watchdog_max_extras": "Maximum watchdog check-ins"
+          },
+          "data_description": {
+            "grace_ms": "How long to wait (ms) for the real answer before speaking the opener. The opener is suppressed if the answer starts first.",
+            "checkin_gap_ms": "Minimum gap (ms) since the last check-in before another may be spoken; also the silence threshold before a watchdog reassurance.",
+            "watchdog_max_extras": "Maximum number of 'still on it' reassurances while tools run. After this the assistant stays quiet and lets the real answer land."
           }
         }
       },
