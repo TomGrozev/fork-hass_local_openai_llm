@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import time
@@ -39,13 +40,24 @@ try:
 except ImportError:
     from voluptuous_openapi import convert
 
+from .checkin.delivery import CheckinDelivery
+from .checkin.exposure import exposed_entities
+from .checkin.gate import OpenerGate
+from .checkin.pool import LinePool
+from .checkin.selector import select_opener_bucket
 from .const import (
     CONF_CHAT_TEMPLATE_KWARGS,
     CONF_CHAT_TEMPLATE_OPTS,
+    CONF_CHECK_INS_ENABLED,
+    CONF_CHECK_INS_ENABLED_DEFAULT,
     CONF_CONTENT_INJECTION_METHOD,
     CONF_CONTENT_INJECTION_METHOD_ASSISTANT,
     CONF_CONTENT_INJECTION_METHOD_TOOL,
     CONF_CONTENT_INJECTION_METHOD_USER,
+    CONF_EXPRESSION_TAGS,
+    CONF_EXPRESSION_TAGS_DEFAULT,
+    CONF_GRACE_MS,
+    CONF_GRACE_MS_DEFAULT,
     CONF_MAX_MESSAGE_HISTORY,
     CONF_PASS_SESSION_ID,
     CONF_REQUEST_BODY_OPTS,
@@ -206,6 +218,7 @@ class LocalAiEntity(Entity):
         self.entry = entry
         self.subentry = subentry
         self.model = subentry.data[CONF_MODEL]
+        self._checkin_pool: LinePool | None = None
         self._attr_unique_id = subentry.subentry_id
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, subentry.subentry_id)},
@@ -228,6 +241,18 @@ class LocalAiEntity(Entity):
     def server_options(self) -> dict:
         """Return server options from entry data."""
         return self.entry.data.get(CONF_SERVER_OPTIONS, {})
+
+    @property
+    def checkin_pool(self) -> LinePool:
+        """
+        Return the shipped check-in line pool, shared across turns.
+
+        One pool per entity so the no-immediate-repeat rule holds between turns, not just within
+        one. Created lazily; the AI-task path never touches it.
+        """
+        if self._checkin_pool is None:
+            self._checkin_pool = LinePool()
+        return self._checkin_pool
 
     @property
     def weaviate_server_opts(self) -> dict:
@@ -545,6 +570,7 @@ class LocalAiEntity(Entity):
         strip_emojis: bool,
         conversation_id: str | None = None,
         meta: GenerationMetadata | None = None,
+        answer_started: asyncio.Event | None = None,
     ) -> AsyncGenerator[conversation.AssistantContentDeltaDict, None]:
         """Transform a streaming OpenAI response to ChatLog format."""
         new_msg = True
@@ -651,6 +677,12 @@ class LocalAiEntity(Entity):
 
                 if not in_think and content.strip():
                     seen_visible = True
+                    # The check-before-speak gate keys off the first *visible* content, not the
+                    # first content delta: an inline `` thinking`` chunk (or an emoji-only one) is
+                    # not the answer starting, and that thinking phase is exactly what the opener
+                    # exists to cover. The real audio start is unobservable from the entity.
+                    if answer_started is not None:
+                        answer_started.set()
 
                 if seen_visible:
                     chunk["content"] = content
@@ -731,6 +763,33 @@ class LocalAiEntity(Entity):
         options = self.options
         server_options = self.server_options
         strip_emojis = options.get(CONF_STRIP_EMOJIS)
+
+        # The instant check-in is voice/conversation-only, so it needs the user's utterance;
+        # the AI-task path passes no ``user_input`` and never gets an opener.
+        check_ins_enabled = options.get(
+            CONF_CHECK_INS_ENABLED, CONF_CHECK_INS_ENABLED_DEFAULT
+        )
+        expression_tags = options.get(
+            CONF_EXPRESSION_TAGS, CONF_EXPRESSION_TAGS_DEFAULT
+        )
+        grace_ms = options.get(CONF_GRACE_MS, CONF_GRACE_MS_DEFAULT)
+
+        # Start the grace timer here, at chat-log-handler entry, before context injection and
+        # the first completion. The task speaks the opener unless the answer beats it.
+        answer_started: asyncio.Event | None = None
+        opener_task: asyncio.Task[bool] | None = None
+        if check_ins_enabled and user_input is not None:
+            gate = OpenerGate(
+                grace_s=grace_ms / 1000,
+                pool=self.checkin_pool,
+                delivery=CheckinDelivery(chat_log, self.entity_id),
+                bucket=select_opener_bucket(
+                    user_input.text, exposed_entities(self.hass)
+                ),
+                expression_tags=expression_tags,
+            )
+            answer_started = gate.answer_started
+            opener_task = self.hass.async_create_task(gate.run())
 
         # Pass conversation session ID via metadata for LLM proxy tracing (LiteLLM + Langfuse)
         pass_session_id = server_options.get(CONF_PASS_SESSION_ID, False)
@@ -813,17 +872,32 @@ class LocalAiEntity(Entity):
 
         client = self.entry.runtime_data
 
-        await self._run_agent_loop(
-            client, model_args, chat_log, strip_emojis, chat_log.conversation_id
-        )
+        try:
+            await self._run_agent_loop(
+                client,
+                model_args,
+                chat_log,
+                strip_emojis,
+                chat_log.conversation_id,
+                answer_started=answer_started,
+            )
+        finally:
+            # A still-waiting opener is dropped once the turn is over: it must never fire after
+            # the answer, and awaiting it while it still waits would add its grace window to
+            # every fast turn.
+            if opener_task is not None:
+                opener_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await opener_task
 
-    async def _run_agent_loop(
+    async def _run_agent_loop(  # noqa: PLR0913
         self,
         client: openai.AsyncOpenAI,
         model_args: dict[str, Any],
         chat_log: conversation.ChatLog,
         strip_emojis: bool,
         conversation_id: str | None = None,
+        answer_started: asyncio.Event | None = None,
     ) -> None:
         """Run the LLM agent loop with tool call iteration."""
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -852,6 +926,7 @@ class LocalAiEntity(Entity):
                                 strip_emojis=strip_emojis,
                                 conversation_id=conversation_id,
                                 meta=meta,
+                                answer_started=answer_started,
                             ),
                         )
                         if (
