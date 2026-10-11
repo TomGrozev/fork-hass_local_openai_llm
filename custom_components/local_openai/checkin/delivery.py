@@ -47,6 +47,11 @@ class CheckinDelivery:
         """Monotonic time of the most recent emitted check-in, or ``None`` if none yet."""
         return self._last_emission
 
+    @property
+    def now(self) -> float:
+        """The current reading of the emission clock (the same clock ``emit`` stamps with)."""
+        return self._clock()
+
     async def emit(self, text: str) -> None:
         """Append ``text`` to the chat log as an assistant delta, then stamp the emission time."""
 

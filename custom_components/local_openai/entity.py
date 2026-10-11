@@ -40,16 +40,19 @@ try:
 except ImportError:
     from voluptuous_openapi import convert
 
+from .checkin.debounce import DeadAirDebounce
 from .checkin.delivery import CheckinDelivery
 from .checkin.exposure import exposed_entities
 from .checkin.gate import OpenerGate
 from .checkin.pool import LinePool
-from .checkin.selector import select_opener_bucket
+from .checkin.selector import bucket_for_tool, select_opener_bucket
 from .const import (
     CONF_CHAT_TEMPLATE_KWARGS,
     CONF_CHAT_TEMPLATE_OPTS,
     CONF_CHECK_INS_ENABLED,
     CONF_CHECK_INS_ENABLED_DEFAULT,
+    CONF_CHECKIN_GAP_MS,
+    CONF_CHECKIN_GAP_MS_DEFAULT,
     CONF_CONTENT_INJECTION_METHOD,
     CONF_CONTENT_INJECTION_METHOD_ASSISTANT,
     CONF_CONTENT_INJECTION_METHOD_TOOL,
@@ -202,6 +205,26 @@ def _format_tool(
 def b64_file(file_path: Path) -> str:
     """Retrieve the base64 encoded file contents."""
     return base64.b64encode(file_path.read_bytes()).decode("utf-8")
+
+
+def _last_tool_call(chat_log: conversation.ChatLog) -> llm.ToolInput | None:
+    """
+    Return the tool call of the round-trip that just ran, or ``None``.
+
+    The agent loop only reaches ``iteration > 0`` after the previous completion produced
+    tool results, so the last assistant turn carrying tool calls is that round-trip.
+    """
+    for content in reversed(chat_log.content):
+        if isinstance(content, conversation.AssistantContent) and content.tool_calls:
+            return content.tool_calls[-1]
+    return None
+
+
+def _tool_slots(tool_call: llm.ToolInput | None) -> dict[str, str] | None:
+    """Stringify the tool call's arguments for the mid-chain slots, or ``None`` if no call."""
+    if tool_call is None:
+        return None
+    return {key: str(value) for key, value in tool_call.tool_args.items()}
 
 
 def _make_uuid(identifier: str) -> str:
@@ -773,16 +796,22 @@ class LocalAiEntity(Entity):
             CONF_EXPRESSION_TAGS, CONF_EXPRESSION_TAGS_DEFAULT
         )
         grace_ms = options.get(CONF_GRACE_MS, CONF_GRACE_MS_DEFAULT)
+        checkin_gap_ms = options.get(CONF_CHECKIN_GAP_MS, CONF_CHECKIN_GAP_MS_DEFAULT)
 
         # Start the grace timer here, at chat-log-handler entry, before context injection and
         # the first completion. The task speaks the opener unless the answer beats it.
         answer_started: asyncio.Event | None = None
         opener_task: asyncio.Task[bool] | None = None
+        checkin_debounce: DeadAirDebounce | None = None
         if check_ins_enabled and user_input is not None:
+            # One delivery per turn: the opener and every later check-in share this emission
+            # clock, so a mid-chain is measured against the most recent emission.
+            delivery = CheckinDelivery(chat_log, self.entity_id)
+            checkin_debounce = DeadAirDebounce(delivery, gap_s=checkin_gap_ms / 1000)
             gate = OpenerGate(
                 grace_s=grace_ms / 1000,
                 pool=self.checkin_pool,
-                delivery=CheckinDelivery(chat_log, self.entity_id),
+                delivery=delivery,
                 bucket=select_opener_bucket(
                     user_input.text, exposed_entities(self.hass)
                 ),
@@ -880,6 +909,9 @@ class LocalAiEntity(Entity):
                 strip_emojis,
                 chat_log.conversation_id,
                 answer_started=answer_started,
+                checkin_debounce=checkin_debounce,
+                expression_tags=expression_tags,
+                opener_task=opener_task,
             )
         finally:
             # A still-waiting opener is dropped once the turn is over: it must never fire after
@@ -898,6 +930,10 @@ class LocalAiEntity(Entity):
         strip_emojis: bool,
         conversation_id: str | None = None,
         answer_started: asyncio.Event | None = None,
+        *,
+        checkin_debounce: DeadAirDebounce | None = None,
+        expression_tags: bool = False,
+        opener_task: asyncio.Task[bool] | None = None,
     ) -> None:
         """Run the LLM agent loop with tool call iteration."""
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -907,6 +943,24 @@ class LocalAiEntity(Entity):
                     model_args["messages"]
                 )
                 model_args["tool_choice"] = "none"
+
+            # The opener is always spoken, a mid-chain only a maybe: the maybe must never jump
+            # ahead of a still-waiting opener. On a fast tool-only turn the opener is still
+            # inside its grace window at the first mid-chain decision, so the mid-chain is
+            # skipped; the opener fires at its grace deadline, and because it stamps the shared
+            # emission clock the debounce then gates every later mid-chain as before.
+            opener_resolved = opener_task is not None and opener_task.done()
+            if iteration > 0 and checkin_debounce is not None and opener_resolved:
+                tool_call = _last_tool_call(chat_log)
+                await checkin_debounce.emit_if_due(
+                    self.checkin_pool.midchain(
+                        bucket_for_tool(tool_call.tool_name)
+                        if tool_call is not None
+                        else "generic",
+                        slots=_tool_slots(tool_call),
+                        expression_tags=expression_tags,
+                    )
+                )
 
             meta: GenerationMetadata = GenerationMetadata(request_start=time.time())
 

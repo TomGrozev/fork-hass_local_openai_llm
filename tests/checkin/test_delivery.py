@@ -55,6 +55,26 @@ class TestEmit:
         assert chat_log.agent_ids == [ENTITY_ID]
 
 
+class TestNow:
+    """now reads the injected emission clock emit stamps with."""
+
+    def test_returns_the_injected_clock_reading(self) -> None:
+        """A fixed clock reads back exactly what it was injected with."""
+        delivery = CheckinDelivery(_FakeChatLog(), ENTITY_ID, clock=lambda: 7.5)
+
+        assert delivery.now == 7.5
+
+    def test_follows_a_mutable_clock(self) -> None:
+        """A moving clock is re-read on every access, not cached."""
+        readings = iter([1.0, 2.0])
+        delivery = CheckinDelivery(
+            _FakeChatLog(), ENTITY_ID, clock=lambda: next(readings)
+        )
+
+        assert delivery.now == 1.0
+        assert delivery.now == 2.0
+
+
 class TestLastEmission:
     """last_emission reports the injected clock's reading for the most recent emit."""
 

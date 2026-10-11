@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from custom_components.local_openai.checkin.pool import MIDCHAIN_BUCKETS
 from custom_components.local_openai.checkin.selector import (
     _KEYWORD_INDEX,
     DOMAIN_BUCKETS,
     ExposedEntity,
+    TOOL_BUCKETS,
     _exposed_name_index,
     _normalize,
+    bucket_for_tool,
     select_opener_bucket,
 )
 
@@ -208,3 +211,20 @@ class TestTieBreaks:
             ExposedEntity("media_player", ("telly",)),
         )
         assert select_opener_bucket("porch telly", exposed) == "locks"
+
+
+class TestBucketForTool:
+    """bucket_for_tool maps an HA tool name to its mid-chain fragment bucket."""
+
+    @pytest.mark.parametrize(("tool_name", "bucket"), sorted(TOOL_BUCKETS.items()))
+    def test_mapped_name_returns_its_bucket(self, tool_name: str, bucket: str) -> None:
+        """Each tabled tool name resolves to its declared mid-chain bucket."""
+        assert bucket_for_tool(tool_name) == bucket
+
+    def test_unknown_name_falls_back_to_generic(self) -> None:
+        """A tool name outside the table resolves to the generic bucket."""
+        assert bucket_for_tool("HassNeverHeardOfIt") == "generic"
+
+    def test_every_bucket_is_a_midchain_bucket(self) -> None:
+        """The table only ever names buckets the pool can render."""
+        assert set(TOOL_BUCKETS.values()) <= set(MIDCHAIN_BUCKETS)

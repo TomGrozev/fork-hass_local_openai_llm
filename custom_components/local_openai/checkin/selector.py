@@ -19,6 +19,9 @@ phrase, then ``TIEBREAK_ORDER``.
 
 Everything except the ranking decision - the tables, normalization, and the precomputed index
 builders below - is mechanical; ``_select_bucket`` holds the matching + scoring decision.
+
+It also resolves an HA tool name to a mid-chain fragment bucket via ``TOOL_BUCKETS``, so both
+signal-to-bucket resolutions (opener signal and tool name) live in this one module.
 """
 
 from __future__ import annotations
@@ -200,6 +203,31 @@ BUCKET_KEYWORDS: Final[Mapping[str, tuple[str, ...]]] = {
         "plans",
     ),
 }
+
+#: HA tool name -> mid-chain fragment bucket. Content, not algorithm; any name not listed
+#: maps to ``generic``. Values must be members of ``pool.MIDCHAIN_BUCKETS``.
+TOOL_BUCKETS: Final[Mapping[str, str]] = {
+    "HassGetState": "query",
+    "GetLiveContext": "query",
+    "HassGetWeather": "weather",
+    "HassTurnOn": "control",
+    "HassTurnOff": "control",
+    "HassLightSet": "control",
+    "HassSetPosition": "control",
+    "HassClimateSetTemperature": "climate",
+    "HassClimateGetTemperature": "climate",
+    "HassMediaPlay": "media",
+    "HassMediaPause": "media",
+    "HassSetVolume": "media",
+    "HassListAddItem": "list",
+    "HassCalendarGetEvents": "calendar",
+    "web_search": "search",
+}
+
+
+def bucket_for_tool(tool_name: str) -> str:
+    """Map an HA tool name to its mid-chain fragment bucket (unknown -> ``"generic"``)."""
+    return TOOL_BUCKETS.get(tool_name, "generic")
 
 
 @dataclass(frozen=True, slots=True)
