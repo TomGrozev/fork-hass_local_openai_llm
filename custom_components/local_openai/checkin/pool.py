@@ -370,13 +370,27 @@ class LinePool:
         self._last[key] = line
         return line
 
+    def _draw(
+        self,
+        key: str,
+        lines: Sequence[Line],
+        *,
+        slots: Mapping[str, str] | None = None,
+        expression_tags: bool = False,
+    ) -> str:
+        """Pick a line for ``key`` and render it with the context's default mood."""
+        return render(
+            self._pick(key, lines),
+            slots=slots,
+            default_mood=DEFAULT_MOOD[key],
+            expression_tags=expression_tags,
+        )
+
     def opener(self, bucket: str, *, expression_tags: bool = False) -> str:
         """Render an opener line for ``bucket``."""
-        key = f"opener:{bucket}"
-        line = self._pick(key, OPENER_LINES[bucket])
-        return render(
-            line,
-            default_mood=DEFAULT_MOOD[key],
+        return self._draw(
+            f"opener:{bucket}",
+            OPENER_LINES[bucket],
             expression_tags=expression_tags,
         )
 
@@ -388,32 +402,18 @@ class LinePool:
         expression_tags: bool = False,
     ) -> str:
         """Render a mid-chain fragment for ``bucket``, filling ``slots`` when possible."""
-        line = self._pick(f"midchain:{bucket}", MIDCHAIN_LINES[bucket])
-        return render(
-            line,
+        key = f"midchain:{bucket}"
+        return self._draw(
+            key,
+            MIDCHAIN_LINES[bucket],
             slots=slots,
-            default_mood=DEFAULT_MOOD[f"midchain:{bucket}"],
             expression_tags=expression_tags,
         )
 
     def watchdog(self, *, expression_tags: bool = False) -> str:
         """Render a watchdog reassurance."""
-        line = self._pick("watchdog", WATCHDOG_LINES)
-        return render(
-            line,
-            default_mood=DEFAULT_MOOD["watchdog"],
-            expression_tags=expression_tags,
-        )
+        return self._draw("watchdog", WATCHDOG_LINES, expression_tags=expression_tags)
 
     def failure(self, *, expression_tags: bool = False) -> str:
         """Render a failure/apology line."""
-        line = self._pick("failure", FAILURE_LINES)
-        return render(
-            line,
-            default_mood=DEFAULT_MOOD["failure"],
-            expression_tags=expression_tags,
-        )
-
-    def default_mood(self, context: str) -> str:
-        """Return the default mood for ``context`` (an ``opener:``/``midchain:``-prefixed key)."""
-        return DEFAULT_MOOD[context]
+        return self._draw("failure", FAILURE_LINES, expression_tags=expression_tags)

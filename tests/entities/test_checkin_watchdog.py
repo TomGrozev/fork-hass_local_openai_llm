@@ -152,6 +152,19 @@ def _progress_then_gated_answer_turn(
     return scripted
 
 
+def _answer_then_gated_finish_turn(
+    gate: asyncio.Event,
+) -> Callable[[], AsyncIterator[ChatCompletionChunk]]:
+    """A turn that streams its answer, holds the turn open, then finishes once ``gate`` is set."""
+
+    async def scripted() -> AsyncIterator[ChatCompletionChunk]:
+        yield _chunk(ChoiceDelta(role="assistant", content=ANSWER_TEXT))
+        await gate.wait()
+        yield _chunk(ChoiceDelta(), finish_reason="stop")
+
+    return scripted
+
+
 class _StubTool(llm.Tool):
     """The HA tool the scripted stream pretends to call."""
 
@@ -429,6 +442,56 @@ class TestWatchdogSilentWhenAnswered:
 
             texts = _content_texts(recorded)
             assert texts[-1] == ANSWER_TEXT
+            assert not any(t in _rendered_watchdogs() for t in texts)
+
+
+class TestWatchdogStopsOnceAnswerStarts:
+    """A stall after the answer has begun must not splice in a reassurance."""
+
+    async def test_stalled_answer_draws_no_reassurance(
+        self,
+        hass: HomeAssistant,
+        mock_config_entry: ConfigEntry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The answer's first visible delta ends the watchdog; later gaps stay silent."""
+        with freeze_time("2026-10-10 12:00:00"):
+            clock = _EmissionClock()
+            _inject_clock(monkeypatch, clock)
+            entity = _make_entity(hass, mock_config_entry)
+            gate = asyncio.Event()
+            _script_stream(entity, [_answer_then_gated_finish_turn(gate)])
+            chat_log = _chat_log(hass)
+            recorded: list[dict[str, Any]] = []
+            chat_log.delta_listener = lambda _log, delta: recorded.append(delta)
+
+            task = _start_turn(entity, chat_log)
+            await _drain()
+            # The answer is already streaming - its first visible delta landed - then it stalls.
+            assert ANSWER_TEXT in _content_texts(recorded)
+
+            # Several gaps of silence elapse while the answer is stalled: no reassurance, and
+            # the opener was suppressed too, because the answer beat its grace window.
+            for _ in range(WATCHDOG_MAX_EXTRAS + 1):
+                clock.now += GAP_MS / 1000
+                async_fire_time_changed(
+                    hass, dt_util.utcnow() + timedelta(milliseconds=GAP_MS)
+                )
+                await _drain()
+
+            texts = _content_texts(recorded)
+            assert texts == [ANSWER_TEXT]
+            assert not any(t in _rendered_watchdogs() for t in texts)
+            assert not any(
+                t in _bucket_openers(select_opener_bucket(USER_TEXT, ())) for t in texts
+            )
+
+            gate.set()
+            await _drain()
+            await task
+
+            texts = _content_texts(recorded)
+            assert texts == [ANSWER_TEXT]
             assert not any(t in _rendered_watchdogs() for t in texts)
 
 

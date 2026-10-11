@@ -23,6 +23,7 @@ def _watchdog(
     debounce: DeadAirDebounce,
     max_extras: int,
     opener_task: asyncio.Task[bool] | None = None,
+    answer_started: asyncio.Event | None = None,
 ) -> Watchdog:
     """A watchdog over the given debounce, drawing its lines from a stub pool."""
     pool = create_autospec(LinePool, instance=True)
@@ -34,6 +35,9 @@ def _watchdog(
         debounce=debounce,
         expression_tags=False,
         opener_task=opener_task,
+        answer_started=(
+            answer_started if answer_started is not None else asyncio.Event()
+        ),
     )
 
 
@@ -120,3 +124,37 @@ class TestOpenerSuppressesTheAttempt:
             await task
 
         assert debounce.emit_if_due.await_count == 1
+
+
+class TestAnswerStartedEndsTheLoop:
+    """Once the real answer has started, the watchdog stops emitting and returns."""
+
+    async def test_answer_started_stops_the_loop(self, hass: HomeAssistant) -> None:
+        """A gap before the answer emits; the answer starting ends the loop on the next wake."""
+        debounce = create_autospec(DeadAirDebounce, instance=True)
+        debounce.emit_if_due.return_value = True
+        answer_started = asyncio.Event()
+        watchdog = _watchdog(
+            debounce=debounce, max_extras=3, answer_started=answer_started
+        )
+
+        with freeze_time(dt_util.utcnow()):
+            task = asyncio.create_task(watchdog.run())
+            await asyncio.sleep(0)
+            # First gap: the answer has not started, so one reassurance lands.
+            async_fire_time_changed(
+                hass, dt_util.utcnow() + timedelta(milliseconds=GAP_MS + 1)
+            )
+            await asyncio.sleep(0)
+            assert debounce.emit_if_due.await_count == 1
+
+            # The answer starts; the next wake returns before emitting anything more.
+            answer_started.set()
+            async_fire_time_changed(
+                hass, dt_util.utcnow() + timedelta(milliseconds=GAP_MS + 1)
+            )
+            await asyncio.sleep(0)
+            await task
+
+        assert debounce.emit_if_due.await_count == 1
+        assert task.done()

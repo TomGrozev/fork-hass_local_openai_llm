@@ -239,8 +239,7 @@ class TestLinePool:
     def test_default_mood_returns_declared_value(
         self, context: str, expected: str
     ) -> None:
-        """default_mood reports the declared mood for a context."""
-        assert LinePool(rng=random.Random(1)).default_mood(context) == expected
+        """DEFAULT_MOOD declares the expected mood for a context."""
         assert DEFAULT_MOOD[context] == expected
 
     def test_opener_and_midchain_default_moods_do_not_collide(self) -> None:

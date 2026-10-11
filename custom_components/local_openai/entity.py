@@ -235,6 +235,15 @@ def _make_uuid(identifier: str) -> str:
     return str(uuid.uuid5(namespace=uuid.NAMESPACE_OID, name=identifier))
 
 
+async def _cancel_quietly(task: asyncio.Task[Any] | None) -> None:
+    """Cancel ``task`` and swallow its cancellation, if it is still running."""
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
 class LocalAiEntity(Entity):
     """Base entity for Open Router."""
 
@@ -873,6 +882,7 @@ class LocalAiEntity(Entity):
                 debounce=checkin_debounce,
                 expression_tags=expression_tags,
                 opener_task=opener_task,
+                answer_started=answer_started,
             )
             watchdog_task = self.hass.async_create_task(watchdog.run())
 
@@ -975,17 +985,11 @@ class LocalAiEntity(Entity):
         finally:
             # A still-running watchdog is dropped once the turn is over: it must never speak
             # after the answer.
-            if watchdog_task is not None:
-                watchdog_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await watchdog_task
+            await _cancel_quietly(watchdog_task)
             # A still-waiting opener is dropped once the turn is over: it must never fire after
             # the answer, and awaiting it while it still waits would add its grace window to
             # every fast turn.
-            if opener_task is not None:
-                opener_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await opener_task
+            await _cancel_quietly(opener_task)
 
     async def _run_agent_loop(  # noqa: PLR0913
         self,

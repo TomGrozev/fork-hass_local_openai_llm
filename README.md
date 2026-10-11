@@ -266,7 +266,8 @@ arrives.
 - **Suppressed when fast** — if the real answer starts within the grace window, no check-in is
   spoken, so a snappy reply is never preceded by a stalling phrase.
 
-If the LLM fails outright, you hear a spoken apology instead of a generic error or silence.
+If the LLM fails outright, you hear a spoken apology instead of a generic error or silence. That
+apology is part of the check-in feature and fires only while check-ins are active.
 
 ### In-place feature fork
 
