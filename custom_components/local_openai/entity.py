@@ -46,6 +46,7 @@ from .checkin.exposure import exposed_entities
 from .checkin.gate import OpenerGate
 from .checkin.pool import LinePool
 from .checkin.selector import bucket_for_tool, select_opener_bucket
+from .checkin.watchdog import Watchdog
 from .const import (
     CONF_CHAT_TEMPLATE_KWARGS,
     CONF_CHAT_TEMPLATE_OPTS,
@@ -68,6 +69,8 @@ from .const import (
     CONF_SERVER_OPTIONS,
     CONF_STRIP_EMOJIS,
     CONF_TEMPERATURE,
+    CONF_WATCHDOG_MAX_EXTRAS,
+    CONF_WATCHDOG_MAX_EXTRAS_DEFAULT,
     CONF_WEAVIATE_API_KEY,
     CONF_WEAVIATE_CLASS_NAME,
     CONF_WEAVIATE_DEFAULT_CLASS_NAME,
@@ -587,13 +590,15 @@ class LocalAiEntity(Entity):
         Subclasses can override to capture additional data from the raw chunk.
         """
 
-    async def _transform_stream(  # noqa: C901 todo: will break this up
+    async def _transform_stream(  # noqa: C901, PLR0913 todo: will break this up
         self,
         stream: AsyncStream[ChatCompletionChunk],
         strip_emojis: bool,
         conversation_id: str | None = None,
         meta: GenerationMetadata | None = None,
         answer_started: asyncio.Event | None = None,
+        *,
+        on_progress: Callable[[], None] | None = None,
     ) -> AsyncGenerator[conversation.AssistantContentDeltaDict, None]:
         """Transform a streaming OpenAI response to ChatLog format."""
         new_msg = True
@@ -611,6 +616,12 @@ class LocalAiEntity(Entity):
 
             if not event.choices:
                 continue
+
+            # Any provider event carrying choices is the model making progress; this marks
+            # progress for the current watchdog interval, so a chunk (or a tool call) means
+            # "not dead air".
+            if on_progress is not None:
+                on_progress()
 
             _LOGGER.debug(event)
             choice = event.choices[0]
@@ -797,12 +808,17 @@ class LocalAiEntity(Entity):
         )
         grace_ms = options.get(CONF_GRACE_MS, CONF_GRACE_MS_DEFAULT)
         checkin_gap_ms = options.get(CONF_CHECKIN_GAP_MS, CONF_CHECKIN_GAP_MS_DEFAULT)
+        watchdog_max_extras = options.get(
+            CONF_WATCHDOG_MAX_EXTRAS, CONF_WATCHDOG_MAX_EXTRAS_DEFAULT
+        )
 
         # Start the grace timer here, at chat-log-handler entry, before context injection and
         # the first completion. The task speaks the opener unless the answer beats it.
         answer_started: asyncio.Event | None = None
         opener_task: asyncio.Task[bool] | None = None
         checkin_debounce: DeadAirDebounce | None = None
+        watchdog: Watchdog | None = None
+        watchdog_task: asyncio.Task[None] | None = None
         if check_ins_enabled and user_input is not None:
             # One delivery per turn: the opener and every later check-in share this emission
             # clock, so a mid-chain is measured against the most recent emission.
@@ -819,6 +835,17 @@ class LocalAiEntity(Entity):
             )
             answer_started = gate.answer_started
             opener_task = self.hass.async_create_task(gate.run())
+            # The watchdog shares the debounce (and so the emission clock) with the mid-chain:
+            # it may only reassure once the opener has resolved and no chunk arrived meanwhile.
+            watchdog = Watchdog(
+                gap_s=checkin_gap_ms / 1000,
+                max_extras=watchdog_max_extras,
+                pool=self.checkin_pool,
+                debounce=checkin_debounce,
+                expression_tags=expression_tags,
+                opener_task=opener_task,
+            )
+            watchdog_task = self.hass.async_create_task(watchdog.run())
 
         # Pass conversation session ID via metadata for LLM proxy tracing (LiteLLM + Langfuse)
         pass_session_id = server_options.get(CONF_PASS_SESSION_ID, False)
@@ -863,6 +890,7 @@ class LocalAiEntity(Entity):
             ],
             max_message_history,
         )
+        messages = self._keep_tool_calls_adjacent(messages)
 
         method = options.get(CONF_CONTENT_INJECTION_METHOD)
         messages, tools = await self._maybe_inject_context(
@@ -912,8 +940,15 @@ class LocalAiEntity(Entity):
                 checkin_debounce=checkin_debounce,
                 expression_tags=expression_tags,
                 opener_task=opener_task,
+                watchdog=watchdog,
             )
         finally:
+            # A still-running watchdog is dropped once the turn is over: it must never speak
+            # after the answer.
+            if watchdog_task is not None:
+                watchdog_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watchdog_task
             # A still-waiting opener is dropped once the turn is over: it must never fire after
             # the answer, and awaiting it while it still waits would add its grace window to
             # every fast turn.
@@ -934,6 +969,7 @@ class LocalAiEntity(Entity):
         checkin_debounce: DeadAirDebounce | None = None,
         expression_tags: bool = False,
         opener_task: asyncio.Task[bool] | None = None,
+        watchdog: Watchdog | None = None,
     ) -> None:
         """Run the LLM agent loop with tool call iteration."""
         for iteration in range(MAX_TOOL_ITERATIONS):
@@ -981,6 +1017,11 @@ class LocalAiEntity(Entity):
                                 conversation_id=conversation_id,
                                 meta=meta,
                                 answer_started=answer_started,
+                                on_progress=(
+                                    watchdog.note_progress
+                                    if watchdog is not None
+                                    else None
+                                ),
                             ),
                         )
                         if (
@@ -1070,6 +1111,42 @@ class LocalAiEntity(Entity):
         existing_content = last_msg.get("content", "")
         last_msg["content"] = existing_content + directive
         return messages
+
+    @staticmethod
+    def _keep_tool_calls_adjacent(messages: list) -> list:
+        """
+        Fold a check-in that interrupts a pending tool call into the tool-calls message.
+
+        A check-in can be emitted while a tool call is in flight (the watchdog covers a long tool
+        wait), which appends a plain assistant message between the assistant message that carries
+        the tool calls and its tool results. Chat Completions requires every tool call to be
+        answered by its ``tool`` message before any other assistant message, so fold such a
+        message's text into the tool-calls message it follows.
+        """
+        result: list = []
+        pending: set[str] = set()
+        target: dict | None = None
+        for message in messages:
+            role = message.get("role")
+            if role == "tool":
+                result.append(message)
+                pending.discard(message.get("tool_call_id"))
+                continue
+            tool_calls = message.get("tool_calls")
+            if role == "assistant" and pending and not tool_calls:
+                # A check-in landed mid tool call: fold it into the message carrying the calls.
+                existing = target.get("content")
+                extra = message.get("content")
+                if existing is None:
+                    target["content"] = extra
+                elif extra is not None:
+                    target["content"] = f"{existing} {extra}"
+                continue
+            result.append(message)
+            if role == "assistant" and tool_calls:
+                pending = {call["id"] for call in tool_calls}
+                target = message
+        return result
 
     @staticmethod
     def _trim_history(messages: list, max_messages: int | None) -> list:
