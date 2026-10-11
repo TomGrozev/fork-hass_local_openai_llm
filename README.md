@@ -27,6 +27,8 @@
 - Added temperature control (conversation agent + ai task)
 - Added option to strip emojis from responses
 - Added support for parallel tool calling
+- Added "Thinking Voice" check-ins: instant spoken lines that cover LLM thinking latency (see
+  [Thinking Voice check-ins](#thinking-voice-check-ins))
 - Added experimental Retrieval Augmented Generation capability
 - Added chat template arguments support
 - Added image generation support for AI Task entities
@@ -242,6 +244,64 @@ configured on the vLLM server rather than per request:
 --reasoning-parser qwen3
 --reasoning-config '{"reasoning_start_str": "<think>", "reasoning_end_str": "\n\nTime to wrap up my reasoning and answer.</think>"}'
 ```
+
+---
+
+## Thinking Voice check-ins
+
+When you make a voice request, the LLM can take several seconds to produce its first token —
+the assistant just goes silent. This fork adds **instant spoken check-ins** that cover that
+thinking latency: the assistant says something immediately, then streams the real answer as it
+arrives.
+
+- **Opener** — a short, natural line ("Let me take a look at that for you…") spoken within a few
+  hundred milliseconds, chosen to be contextual where possible ("checking the weather") from your
+  request and the entities exposed to Assist.
+- **Mid-chain check-ins** — brief updates ("okay, checking that now…") before each tool step, so
+  multi-step requests don't fall silent part-way through.
+- **Watchdog reassurance** — if a tool or the model takes a long time, occasional reassurance
+  ("Still on it…") covers the dead air, capped so you aren't talked at while you wait.
+- **Mood tags** — check-ins carry a mood tag (`[calm]`, `[playful]`, `[sincere]`, `[excited]`)
+  that expressive TTS engines can speak with feeling.
+- **Suppressed when fast** — if the real answer starts within the grace window, no check-in is
+  spoken, so a snappy reply is never preceded by a stalling phrase.
+
+If the LLM fails outright, you hear a spoken apology instead of a generic error or silence.
+
+### In-place feature fork
+
+This is a feature fork of [`skye-harris/hass_local_openai_llm`](https://github.com/skye-harris/hass_local_openai_llm)
+using the **same `local_openai` domain** — it is not a new integration and there is no rebrand.
+Installing it **replaces** an existing upstream install: the two cannot coexist. No new domain is
+added and no configuration migration is needed; your existing connection settings carry over, and
+the check-in feature is enabled by default (turn it off per agent to fall back to the plain
+streaming agent).
+
+### Installation
+
+Install via [HACS](https://hacs.xyz/) as a custom integration — same flow as above: add this
+repository as a custom repository of type *Integration*, install, and restart Home Assistant.
+
+### TTS engine recommendation
+
+Check-ins are delivered through Home Assistant's normal streaming pipeline, so **early audio
+requires a streaming-input TTS engine** (e.g. ElevenLabs, Google, or Nabu Casa cloud TTS). On
+non-streaming engines (Piper, edge-tts, …) check-ins still play, but as delayed audio rather than
+truly instant speech — the turn degrades cleanly, just without the latency-hiding benefit.
+A streaming-input TTS engine is therefore recommended for the full effect.
+
+### Configuration
+
+Check-in options are configured per conversation agent, in the agent's `conversation` subentry
+(reconfigure the subentry to change them; existing model/prompt settings are unaffected):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `check_ins_enabled` | bool | `true` | Master toggle for all check-in behaviour (opener, mid-chain, watchdog). |
+| `expression_tags` | bool | `false` | Pass mood tags through to the TTS engine. Enable only if your engine understands inline tags; otherwise they are stripped so nothing is spoken literally. |
+| `grace_ms` | int (ms) | `500` | How long to wait for the real answer before speaking the opener. |
+| `checkin_gap_ms` | int (ms) | `1500` | Minimum spacing between check-ins; also drives the watchdog cadence. |
+| `watchdog_max_extras` | int | `2` | Maximum number of watchdog reassurances per turn. |
 
 ---
 

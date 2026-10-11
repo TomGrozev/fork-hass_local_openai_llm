@@ -1,0 +1,35 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- **Thinking Voice check-ins** — instant spoken check-ins that cover LLM thinking latency on
+  voice turns:
+  - A contextual spoken **opener** within a few hundred milliseconds of a request, selected from
+    a curated, mood-tagged line pool based on the utterance and the entities exposed to Assist.
+  - Brief **mid-chain check-ins** before each tool step, so multi-step requests don't fall silent.
+  - A capped **watchdog** that offers occasional reassurance during long waits instead of dead
+    air, then goes quiet and lets the real answer land whenever it arrives.
+  - Optional inline **mood tags** (`[calm]`, `[playful]`, `[sincere]`, `[excited]`) for
+    expressive TTS engines, stripped automatically on engines that don't support them.
+  - Check-ins are **suppressed when the real answer is fast**, so snappy replies are never
+    preceded by a stalling phrase.
+  - A spoken **apology** instead of a generic error when the LLM fails outright.
+  - Configured per conversation agent: `check_ins_enabled` (default `true`),
+    `expression_tags` (default `false`), `grace_ms` (default `500`), `checkin_gap_ms`
+    (default `1500`), `watchdog_max_extras` (default `2`).
+  - Early audio requires a **streaming-input TTS engine** (e.g. ElevenLabs, Google, Nabu Casa
+    cloud); on non-streaming engines (Piper, edge-tts, …) check-ins play as delayed audio.
+
+### Changed
+
+- This fork is an **in-place feature fork** of
+  [`skye-harris/hass_local_openai_llm`](https://github.com/skye-harris/hass_local_openai_llm):
+  same `local_openai` domain, no rebrand. Installing it **replaces** any existing upstream
+  install — the two cannot coexist. No new domain and no configuration migration is required.
