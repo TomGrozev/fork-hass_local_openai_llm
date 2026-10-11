@@ -44,7 +44,8 @@ from .checkin.debounce import DeadAirDebounce
 from .checkin.delivery import CheckinDelivery
 from .checkin.exposure import exposed_entities
 from .checkin.gate import OpenerGate
-from .checkin.pool import LinePool
+from .checkin.language import is_english
+from .checkin.pool import LinePool, strip_mood_tags_streaming
 from .checkin.selector import bucket_for_tool, select_opener_bucket
 from .checkin.watchdog import Watchdog
 from .const import (
@@ -598,6 +599,7 @@ class LocalAiEntity(Entity):
         meta: GenerationMetadata | None = None,
         answer_started: asyncio.Event | None = None,
         *,
+        expression_tags: bool = False,
         on_progress: Callable[[], None] | None = None,
     ) -> AsyncGenerator[conversation.AssistantContentDeltaDict, None]:
         """Transform a streaming OpenAI response to ChatLog format."""
@@ -605,6 +607,10 @@ class LocalAiEntity(Entity):
         pending_think = ""
         in_think = False
         seen_visible = False
+        # A ``[mood]`` tag can be split across deltas (``"[cal"`` + ``"m] hi"``). With
+        # ``expression_tags`` off the strip holds a trailing partial tag here and prepends it
+        # to the next delta; it is flushed verbatim at end of stream.
+        mood_carry = ""
         loop = asyncio.get_running_loop()
         pending_tool_calls = {}
         tool_call_id = None
@@ -719,6 +725,14 @@ class LocalAiEntity(Entity):
                         answer_started.set()
 
                 if seen_visible:
+                    if not expression_tags:
+                        # Delivery-side strip for the raw LLM answer: check-ins already apply
+                        # the toggle inside ``pool.render``, but a model that emits its own
+                        # ``[mood]`` tags would otherwise speak them literally on a TTS engine
+                        # that chokes on brackets. Independent of ``check_ins_enabled``.
+                        content, mood_carry = strip_mood_tags_streaming(
+                            content, mood_carry
+                        )
                     chunk["content"] = content
 
             tool_error_deltas: list[dict] = []
@@ -784,6 +798,10 @@ class LocalAiEntity(Entity):
                 for error_delta in tool_error_deltas:
                     yield error_delta
 
+        if not expression_tags and mood_carry:
+            # A trailing fragment that never completed a ``[mood]`` tag is spoken as written.
+            yield {"content": mood_carry}
+
     async def _async_handle_chat_log(
         self,
         chat_log: conversation.ChatLog,
@@ -799,9 +817,17 @@ class LocalAiEntity(Entity):
         strip_emojis = options.get(CONF_STRIP_EMOJIS)
 
         # The instant check-in is voice/conversation-only, so it needs the user's utterance;
-        # the AI-task path passes no ``user_input`` and never gets an opener.
+        # the AI-task path passes no ``user_input`` and never gets an opener. The curated pool
+        # and keyword tables are English-only, so a non-English pipeline degrades to the plain
+        # streamed answer: every injection point below is skipped (same clean-degrade path as
+        # ``check_ins_enabled`` off).
         check_ins_enabled = options.get(
             CONF_CHECK_INS_ENABLED, CONF_CHECK_INS_ENABLED_DEFAULT
+        )
+        check_ins_active = (
+            check_ins_enabled
+            and user_input is not None
+            and is_english(user_input.language)
         )
         expression_tags = options.get(
             CONF_EXPRESSION_TAGS, CONF_EXPRESSION_TAGS_DEFAULT
@@ -817,17 +843,20 @@ class LocalAiEntity(Entity):
         answer_started: asyncio.Event | None = None
         opener_task: asyncio.Task[bool] | None = None
         checkin_debounce: DeadAirDebounce | None = None
+        checkin_delivery: CheckinDelivery | None = None
         watchdog: Watchdog | None = None
         watchdog_task: asyncio.Task[None] | None = None
-        if check_ins_enabled and user_input is not None:
+        if check_ins_active:
             # One delivery per turn: the opener and every later check-in share this emission
             # clock, so a mid-chain is measured against the most recent emission.
-            delivery = CheckinDelivery(chat_log, self.entity_id)
-            checkin_debounce = DeadAirDebounce(delivery, gap_s=checkin_gap_ms / 1000)
+            checkin_delivery = CheckinDelivery(chat_log, self.entity_id)
+            checkin_debounce = DeadAirDebounce(
+                checkin_delivery, gap_s=checkin_gap_ms / 1000
+            )
             gate = OpenerGate(
                 grace_s=grace_ms / 1000,
                 pool=self.checkin_pool,
-                delivery=delivery,
+                delivery=checkin_delivery,
                 bucket=select_opener_bucket(
                     user_input.text, exposed_entities(self.hass)
                 ),
@@ -938,6 +967,7 @@ class LocalAiEntity(Entity):
                 chat_log.conversation_id,
                 answer_started=answer_started,
                 checkin_debounce=checkin_debounce,
+                checkin_delivery=checkin_delivery,
                 expression_tags=expression_tags,
                 opener_task=opener_task,
                 watchdog=watchdog,
@@ -967,6 +997,7 @@ class LocalAiEntity(Entity):
         answer_started: asyncio.Event | None = None,
         *,
         checkin_debounce: DeadAirDebounce | None = None,
+        checkin_delivery: CheckinDelivery | None = None,
         expression_tags: bool = False,
         opener_task: asyncio.Task[bool] | None = None,
         watchdog: Watchdog | None = None,
@@ -1017,6 +1048,7 @@ class LocalAiEntity(Entity):
                                 conversation_id=conversation_id,
                                 meta=meta,
                                 answer_started=answer_started,
+                                expression_tags=expression_tags,
                                 on_progress=(
                                     watchdog.note_progress
                                     if watchdog is not None
@@ -1085,6 +1117,15 @@ class LocalAiEntity(Entity):
 
             except openai.OpenAIError as err:
                 _LOGGER.exception("API server returned an error")
+                if checkin_delivery is not None:
+                    # Check-ins own the turn's reply, so a hard failure speaks a curated
+                    # apology down the same chat-log path and ends the turn cleanly rather
+                    # than raising. Emitted directly (not through the debounce): it is
+                    # terminal, the last thing the user hears this turn.
+                    await checkin_delivery.emit(
+                        self.checkin_pool.failure(expression_tags=expression_tags)
+                    )
+                    return
                 msg = "API server returned an error. Check the system logs for further details."
                 raise HomeAssistantError(msg) from err
             except Exception as err:

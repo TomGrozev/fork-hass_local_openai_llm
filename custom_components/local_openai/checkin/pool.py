@@ -42,6 +42,9 @@ MOODS: Final[frozenset[str]] = frozenset(
     {"calm", "playful", "sincere", "excited", "nervous"}
 )
 
+#: The full ``[mood]`` tags the strip helpers recognise (``"[calm]"``, ...).
+_MOOD_TAGS: Final[frozenset[str]] = frozenset(f"[{mood}]" for mood in MOODS)
+
 #: Inclusive text-length band for openers (the stored text carries no mood tag).
 OPENER_LENGTH_MIN: Final = 60
 OPENER_LENGTH_MAX: Final = 66
@@ -282,6 +285,52 @@ def render(
     if expression_tags and mood is not None:
         return f"[{mood}] {text}"
     return text
+
+
+def strip_mood_tags_streaming(text: str, carry: str = "") -> tuple[str, str]:
+    """
+    Strip ``[mood]`` tags from one streamed delta, holding a split tag over.
+
+    The raw LLM answer may carry the same inline ``[mood]`` tags the pool emits, and a
+    tokenizer can split one across deltas (``"[cal"`` then ``"m] hi"``). A trailing fragment
+    that starts with ``[`` and is still a prefix of some ``[mood]`` tag is returned as
+    ``carry`` for the caller to prepend to the next delta; anything else - a non-mood bracket,
+    or a ``[`` that can no longer become a mood tag - is emitted verbatim.
+
+    Returns ``(emitted, carry)``. Flush a non-empty ``carry`` at end of stream so a fragment
+    that never completes is spoken as written.
+    """
+    buf = carry + text
+    out: list[str] = []
+    i = 0
+    n = len(buf)
+    while i < n:
+        char = buf[i]
+        if char == "[":
+            end = buf.find("]", i)
+            if end == -1:
+                fragment = buf[i:]
+                if any(tag.startswith(fragment) for tag in _MOOD_TAGS):
+                    # Could be a mood tag split across deltas: hold it back.
+                    return "".join(out), fragment
+                out.append(char)
+                i += 1
+                continue
+            if buf[i : end + 1] in _MOOD_TAGS:
+                i = end + 1
+                continue
+            out.append(char)
+            i += 1
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out), ""
+
+
+def strip_mood_tags(text: str) -> str:
+    """Remove inline ``[mood]`` tags (moods in :data:`MOODS`) from a whole string."""
+    stripped, carry = strip_mood_tags_streaming(text)
+    return stripped + carry
 
 
 def select(

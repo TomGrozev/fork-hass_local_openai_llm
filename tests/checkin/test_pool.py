@@ -22,6 +22,8 @@ from custom_components.local_openai.checkin.pool import (
     LinePool,
     render,
     select,
+    strip_mood_tags,
+    strip_mood_tags_streaming,
 )
 
 
@@ -251,6 +253,71 @@ class TestLinePool:
         """An unknown opener bucket surfaces a KeyError."""
         with pytest.raises(KeyError):
             LinePool(rng=random.Random(1)).opener("nope")
+
+
+class TestStripMoodTags:
+    """The delivery-side strip removes ``[mood]`` tags from streamed answer text."""
+
+    def test_whole_tag_is_removed(self) -> None:
+        """A complete mood tag is dropped, the answer text around it kept."""
+        assert (
+            strip_mood_tags("[calm] Let me look into that.")
+            == " Let me look into that."
+        )
+
+    @pytest.mark.parametrize("mood", sorted(MOODS))
+    def test_every_declared_mood_is_stripped(self, mood: str) -> None:
+        """Every mood in the fixed set is a strippable tag."""
+        assert strip_mood_tags(f"[{mood}] text") == " text"
+
+    def test_multiple_tags_are_all_removed(self) -> None:
+        """Every mood tag in the string is removed, not just the first."""
+        assert strip_mood_tags("[calm] hi [playful] there") == " hi  there"
+
+    def test_non_mood_bracket_is_untouched(self) -> None:
+        """A bracketed word outside MOODS is emitted verbatim."""
+        assert strip_mood_tags("a [note] b") == "a [note] b"
+
+    def test_bracket_that_cannot_be_a_mood_tag_is_untouched(self) -> None:
+        """A ``[`` that cannot begin a mood tag is emitted normally."""
+        assert strip_mood_tags("values [1,2] here") == "values [1,2] here"
+
+    def test_unterminated_prefix_is_kept_when_the_stream_ends(self) -> None:
+        """A trailing fragment that never completes is flushed verbatim."""
+        assert strip_mood_tags("hello [cal") == "hello [cal"
+
+    def test_split_tag_is_carried_across_chunks(self) -> None:
+        """A tag split across deltas is held back, then stripped once complete."""
+        emitted, carry = strip_mood_tags_streaming("I am [cal")
+        assert emitted == "I am "
+        assert carry == "[cal"
+
+        emitted, carry = strip_mood_tags_streaming("m] here", carry)
+        assert emitted == " here"
+        assert carry == ""
+
+    def test_split_prefix_can_become_a_non_mood_bracket(self) -> None:
+        """A carried ``[`` that turns out not to be a mood tag is released verbatim."""
+        emitted, carry = strip_mood_tags_streaming("[cal")
+        assert emitted == ""
+        assert carry == "[cal"
+
+        emitted, carry = strip_mood_tags_streaming("mny] x", carry)
+        assert emitted == "[calmny] x"
+        assert carry == ""
+
+    def test_lone_bracket_is_carried_not_dropped(self) -> None:
+        """A bare ``[`` at a delta boundary could start a tag, so it is carried."""
+        emitted, carry = strip_mood_tags_streaming("done [")
+        assert emitted == "done "
+        assert carry == "["
+
+    def test_carry_prepended_to_next_chunk_strips_across_boundary(self) -> None:
+        """A complete tag split across two deltas leaves no tag and no residue."""
+        emitted_a, carry = strip_mood_tags_streaming("ok [play")
+        emitted_b, carry = strip_mood_tags_streaming("ful] go", carry)
+        assert emitted_a + emitted_b == "ok  go"
+        assert carry == ""
 
 
 def _draw_sequence(lines: tuple[Line, ...], *, seed: int) -> list[Line]:
