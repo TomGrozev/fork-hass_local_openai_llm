@@ -21,9 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Check-ins are **suppressed when the real answer is fast**, so snappy replies are never
     preceded by a stalling phrase.
   - A spoken **apology** instead of a generic error when the LLM fails outright.
+  - Check-ins and the watchdog wait for the **estimated end of speech** already queued — both
+    earlier check-ins and the model's own streamed text, estimated from word count at a
+    configurable speaking rate — and fire only after `checkin_gap_ms` of estimated silence,
+    so they never land in front of an answer still queued.
+  - Mid-chain check-in lines follow the tool's **base name**, so API-prefixed tools (e.g.
+    `search-services__search_web`) and [skye-harris' Tools for Assist](https://github.com/skye-harris/llm_intents)
+    get a matching line instead of a generic one.
   - Configured per conversation agent: `check_ins_enabled` (default `true`),
     `expression_tags` (default `false`), `grace_ms` (default `500`), `checkin_gap_ms`
-    (default `1500`), `watchdog_max_extras` (default `2`).
+    (default `1500`), `watchdog_max_extras` (default `2`), `speech_rate_wpm` (default `150`).
   - Early audio requires a **streaming-input TTS engine** (e.g. ElevenLabs, Google, Nabu Casa
     cloud); on non-streaming engines (Piper, edge-tts, …) check-ins play as delayed audio.
 

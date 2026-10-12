@@ -64,6 +64,12 @@ GRACE_MS = 500
 WATCHDOG_MAX_EXTRAS = 2
 #: The injected emission clock's starting reading; the debounce only compares deltas.
 CLOCK_START = 100.0
+#: A clock reading comfortably past an opener's estimated speech (a 60-66 char opener is ~4-5 s
+#: of audio), so a later check-in is not blocked by the opener still playing.
+PAST_OPENER_S = 10.0
+#: A clock step past a gap plus a reassurance's own short speech, so the next one is due under
+#: the speech-horizon rule.
+GAP_STEP_S = 2 * GAP_MS / 1000
 
 
 class _EmissionClock:
@@ -336,9 +342,11 @@ class TestWatchdogCappedReassurances:
             assert len(texts) == 1
             assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
 
-            # Each gap of dead air draws one reassurance, up to the cap of two.
+            # The opener's own audio must finish before any reassurance; then each gap of dead
+            # air draws one reassurance, up to the cap of two.
+            clock.now = CLOCK_START + PAST_OPENER_S
             for _ in range(3):
-                clock.now += GAP_MS / 1000
+                clock.now += GAP_STEP_S
                 async_fire_time_changed(
                     hass, dt_util.utcnow() + timedelta(milliseconds=GAP_MS)
                 )
@@ -632,7 +640,9 @@ class TestWatchdogDuringToolWait:
             )
             await _drain()
             # The tool-call chunk landed in the first interval, marking progress, so the first
-            # gap is silent; the second gap is dead air and draws the reassurance.
+            # gap is silent; the second gap is dead air and draws the reassurance. The opener's
+            # own audio has already finished, so it does not block the reassurance.
+            clock.now = CLOCK_START + PAST_OPENER_S
             clock.now += GAP_MS / 1000
             async_fire_time_changed(
                 hass, dt_util.utcnow() + timedelta(milliseconds=GAP_MS)

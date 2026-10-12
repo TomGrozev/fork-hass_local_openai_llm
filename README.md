@@ -265,6 +265,13 @@ arrives.
   that expressive TTS engines can speak with feeling.
 - **Suppressed when fast** — if the real answer starts within the grace window, no check-in is
   spoken, so a snappy reply is never preceded by a stalling phrase.
+- **Waits for quiet** — mid-chain check-ins and watchdog reassurances wait for the *estimated*
+  end of what's already being spoken (both earlier check-ins and the model's own streamed text):
+  a check-in fires only after enough estimated dead air (`checkin_gap_ms`) has passed, so it
+  never lands in front of an answer that is still queued.
+- **Tool-aware lines** — mid-chain lines are chosen from the tool's base name, so API-prefixed
+  tools (e.g. `search-services__search_web`) and skye-harris' tools integration still get a
+  matching line instead of a generic one.
 
 If the LLM fails outright, you hear a spoken apology instead of a generic error or silence. That
 apology is part of the check-in feature and fires only while check-ins are active.
@@ -301,8 +308,9 @@ Check-in options are configured per conversation agent, in the agent's `conversa
 | `check_ins_enabled` | bool | `true` | Master toggle for all check-in behaviour (opener, mid-chain, watchdog). |
 | `expression_tags` | bool | `false` | Pass mood tags through to the TTS engine. Enable only if your engine understands inline tags; otherwise they are stripped so nothing is spoken literally. |
 | `grace_ms` | int (ms) | `500` | How long to wait for the real answer before speaking the opener. |
-| `checkin_gap_ms` | int (ms) | `1500` | Minimum spacing between check-ins; also drives the watchdog cadence. |
+| `checkin_gap_ms` | int (ms) | `1500` | Minimum estimated dead air (ms) after the *estimated* end of speech before a check-in fills it; also drives the watchdog cadence. |
 | `watchdog_max_extras` | int | `2` | Maximum number of watchdog reassurances per turn. |
+| `speech_rate_wpm` | int (wpm) | `150` | Estimated TTS speaking rate used to predict when queued speech ends (slider 80–250). |
 
 ---
 

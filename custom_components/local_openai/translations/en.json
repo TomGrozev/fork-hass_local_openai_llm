@@ -312,11 +312,13 @@
           "data": {
             "grace_ms": "Grace window",
             "checkin_gap_ms": "Check-in spacing",
+            "speech_rate_wpm": "Speaking rate",
             "watchdog_max_extras": "Maximum watchdog check-ins"
           },
           "data_description": {
             "grace_ms": "How long to wait (ms) for the real answer before speaking the opener. The opener is suppressed if the answer starts first.",
-            "checkin_gap_ms": "Minimum gap (ms) since the last check-in before another may be spoken; also the silence threshold before a watchdog reassurance.",
+            "checkin_gap_ms": "Minimum dead air (ms) after the *estimated* end of the speech already queued (word count at the speaking rate below) before another check-in may be spoken; also the watchdog's silence threshold.",
+            "speech_rate_wpm": "Assumed TTS speaking rate (words per minute) used to estimate how long the queued speech still takes. The check-in spacing above is measured from that estimated end.",
             "watchdog_max_extras": "Maximum number of 'still on it' reassurances while tools run. After this the assistant stays quiet and lets the real answer land."
           }
         }

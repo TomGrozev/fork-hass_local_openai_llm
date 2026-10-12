@@ -68,6 +68,8 @@ from .const import (
     CONF_REQUEST_BODY_OPTS,
     CONF_REQUEST_BODY_PARAMETERS,
     CONF_SERVER_OPTIONS,
+    CONF_SPEECH_RATE_WPM,
+    CONF_SPEECH_RATE_WPM_DEFAULT,
     CONF_STRIP_EMOJIS,
     CONF_TEMPERATURE,
     CONF_WATCHDOG_MAX_EXTRAS,
@@ -610,6 +612,7 @@ class LocalAiEntity(Entity):
         *,
         expression_tags: bool = False,
         on_progress: Callable[[], None] | None = None,
+        on_spoken: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[conversation.AssistantContentDeltaDict, None]:
         """Transform a streaming OpenAI response to ChatLog format."""
         new_msg = True
@@ -743,6 +746,12 @@ class LocalAiEntity(Entity):
                             content, mood_carry
                         )
                     chunk["content"] = content
+                    # The model's own visible text is spoken too, so it pushes the delivery's
+                    # speech horizon out exactly like a check-in; without it a mid-chain would
+                    # measure silence from the last check-in while the model's preamble is
+                    # still playing.
+                    if on_spoken is not None:
+                        on_spoken(content)
 
             tool_error_deltas: list[dict] = []
             if choice.finish_reason:
@@ -843,6 +852,9 @@ class LocalAiEntity(Entity):
         )
         grace_ms = options.get(CONF_GRACE_MS, CONF_GRACE_MS_DEFAULT)
         checkin_gap_ms = options.get(CONF_CHECKIN_GAP_MS, CONF_CHECKIN_GAP_MS_DEFAULT)
+        speech_rate_wpm = options.get(
+            CONF_SPEECH_RATE_WPM, CONF_SPEECH_RATE_WPM_DEFAULT
+        )
         watchdog_max_extras = options.get(
             CONF_WATCHDOG_MAX_EXTRAS, CONF_WATCHDOG_MAX_EXTRAS_DEFAULT
         )
@@ -858,7 +870,9 @@ class LocalAiEntity(Entity):
         if check_ins_active:
             # One delivery per turn: the opener and every later check-in share this emission
             # clock, so a mid-chain is measured against the most recent emission.
-            checkin_delivery = CheckinDelivery(chat_log, self.entity_id)
+            checkin_delivery = CheckinDelivery(
+                chat_log, self.entity_id, words_per_minute=speech_rate_wpm
+            )
             checkin_debounce = DeadAirDebounce(
                 checkin_delivery, gap_s=checkin_gap_ms / 1000
             )
@@ -1056,6 +1070,11 @@ class LocalAiEntity(Entity):
                                 on_progress=(
                                     watchdog.note_progress
                                     if watchdog is not None
+                                    else None
+                                ),
+                                on_spoken=(
+                                    checkin_delivery.note_spoken_text
+                                    if checkin_delivery is not None
                                     else None
                                 ),
                             ),

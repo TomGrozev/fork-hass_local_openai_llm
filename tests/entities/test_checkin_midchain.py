@@ -68,6 +68,15 @@ GAP_MS = 1500
 GRACE_MS = 500
 #: The injected emission clock's starting reading; the debounce only compares deltas.
 CLOCK_START = 100.0
+#: A clock reading comfortably past an opener's estimated speech (a 60-66 char opener is ~4-5 s
+#: of audio) plus the gap, so a mid-chain is due under the speech-horizon rule.
+PAST_OPENER_S = 10.0
+#: The model's own visible preamble from the reported bug: a pre-tool answer that still has to be
+#: spoken, so it extends the speech horizon the mid-chain has to clear.
+PREAMBLE_TEXT = (
+    "Ooh, a launch question — my favourite kind. "
+    "Let me find out when the next one's going up."
+)
 
 
 class _EmissionClock:
@@ -197,6 +206,33 @@ def _answer_turn() -> Callable[[], AsyncIterator[ChatCompletionChunk]]:
     return scripted
 
 
+def _preamble_then_tool_turn(
+    gate: asyncio.Event,
+) -> Callable[[], AsyncIterator[ChatCompletionChunk]]:
+    """A turn that streams a visible preamble, then calls ``TOOL_NAME``; gated at the start."""
+
+    async def scripted() -> AsyncIterator[ChatCompletionChunk]:
+        await gate.wait()
+        yield _chunk(ChoiceDelta(role="assistant", content=PREAMBLE_TEXT))
+        yield _chunk(
+            ChoiceDelta(
+                tool_calls=[
+                    ChoiceDeltaToolCall(
+                        index=0,
+                        id="call_1",
+                        type="function",
+                        function=ChoiceDeltaToolCallFunction(
+                            name=TOOL_NAME, arguments='{"name": "kitchen"}'
+                        ),
+                    )
+                ],
+            )
+        )
+        yield _chunk(ChoiceDelta(), finish_reason="tool_calls")
+
+    return scripted
+
+
 def _script_stream(
     entity: LocalAiConversationEntity,
     turns: list[Callable[[], AsyncIterator[ChatCompletionChunk]]],
@@ -300,8 +336,9 @@ class TestMidchainBeforeToolStep:
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS + 1)
             )
             await _drain()
-            # The mid-chain may only speak once the gap since the opener has elapsed.
-            clock.now = CLOCK_START + GAP_MS / 1000
+            # The mid-chain may only speak once the opener's estimated audio has finished and
+            # the gap of silence has elapsed.
+            clock.now = CLOCK_START + PAST_OPENER_S
             gate.set()
             await _drain()
             await task
@@ -376,8 +413,11 @@ class TestMidchainDebounced:
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS + 1)
             )
             await _drain()
-            # The next step lands inside the gap.
-            clock.now = CLOCK_START + (GAP_MS / 2) / 1000  # half the gap, in seconds
+            # The next step lands while the opener's estimated audio is still playing, so it is
+            # nowhere near the silence the debounce needs.
+            clock.now = (
+                CLOCK_START + (GAP_MS / 2) / 1000
+            )  # well inside the opener's audio
             gate.set()
             await _drain()
             await task
@@ -419,8 +459,9 @@ class TestBackToBackStepsCollapse:
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS + 1)
             )
             await _drain()
-            # The first mid-chain may speak once the gap since the opener has elapsed.
-            clock.now = CLOCK_START + GAP_MS / 1000
+            # The first mid-chain may speak once the opener's estimated audio and the gap have
+            # both elapsed.
+            clock.now = CLOCK_START + PAST_OPENER_S
             gate.set()
             await _drain()
             await task
@@ -466,13 +507,14 @@ class TestMidchainFiresAcrossGap:
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS + 1)
             )
             await _drain()
-            # Release the first step past the gap since the opener: its mid-chain fires and
-            # stamps the shared emission clock.
-            clock.now = CLOCK_START + GAP_MS / 1000
+            # Release the first step once the opener's audio and the gap have elapsed: its
+            # mid-chain fires and pushes the shared horizon out by its own short speech.
+            clock.now = CLOCK_START + PAST_OPENER_S
             g1.set()
             await _drain()
-            # The second step waits out a further gap, so its mid-chain is due too.
-            clock.now = CLOCK_START + 2 * GAP_MS / 1000
+            # The second step waits out the first mid-chain's speech plus a further gap, so its
+            # mid-chain is due too.
+            clock.now = CLOCK_START + PAST_OPENER_S * 2
             g2.set()
             await _drain()
             await task
@@ -524,8 +566,8 @@ class TestMidchainSlotsFilledFromToolArgs:
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS + 1)
             )
             await _drain()
-            # The mid-chain may speak once the gap since the opener has elapsed.
-            clock.now = CLOCK_START + GAP_MS / 1000
+            # The mid-chain may speak once the opener's estimated audio and the gap have elapsed.
+            clock.now = CLOCK_START + PAST_OPENER_S
             gate.set()
             await _drain()
             await task
@@ -538,3 +580,48 @@ class TestMidchainSlotsFilledFromToolArgs:
             )
             # The blank is filled, not the slot-free fallback.
             assert midchain_text == "Adding milk..."
+
+
+class TestMidchainWaitsOutTheModelsAudio:
+    """A check-in must not fire while the model's own audio is still playing (reported bug)."""
+
+    async def test_preamble_and_tool_round_trip_draw_no_midchain(
+        self,
+        hass: HomeAssistant,
+        mock_config_entry: ConfigEntry,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The opener, then a preamble and a ~3 s tool step: no mid-chain, just the answer."""
+        with freeze_time("2026-10-10 12:00:00"):
+            clock = _EmissionClock()
+            _inject_clock(monkeypatch, clock)
+            entity = _make_entity(hass, mock_config_entry, gap_ms=2000)
+            gate = asyncio.Event()
+            _script_stream(entity, [_preamble_then_tool_turn(gate), _answer_turn()])
+            chat_log = _chat_log(hass)
+            recorded: list[dict[str, Any]] = []
+            chat_log.delta_listener = lambda _log, delta: recorded.append(delta)
+
+            task = _start_turn(entity, chat_log)
+            await _drain()
+            # The tool turn is held before any chunk, so the grace window closes and the opener
+            # speaks on its own.
+            async_fire_time_changed(
+                hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS + 1)
+            )
+            await _drain()
+            assert len(spoken_texts(recorded)) == 1
+
+            # The model streams its preamble at ~1.5 s and the tool result lands ~3.04 s after
+            # the opener. Only 3.04 s have passed, but the opener and preamble together are
+            # several seconds of queued audio, so the mid-chain is skipped rather than spoken in
+            # front of the answer.
+            clock.now = CLOCK_START + 3.04
+            gate.set()
+            await _drain()
+            await task
+
+            texts = spoken_texts(recorded)
+            assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
+            assert not any(text in _bucket_midchains(TOOL_BUCKET) for text in texts)
+            assert texts[-1] == ANSWER_TEXT

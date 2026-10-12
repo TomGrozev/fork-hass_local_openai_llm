@@ -225,6 +225,14 @@ class TestBucketForTool:
         """A tool name outside the table resolves to the generic bucket."""
         assert bucket_for_tool("HassNeverHeardOfIt") == "generic"
 
+    def test_namespaced_name_matches_on_its_base_name(self) -> None:
+        """A merged-API prefix is stripped before lookup."""
+        assert bucket_for_tool("search-services__search_web") == "search"
+
+    def test_unknown_namespaced_name_falls_back_to_generic(self) -> None:
+        """An unrecognised base name under a namespace still yields generic."""
+        assert bucket_for_tool("search-services__never_heard_of_it") == "generic"
+
     def test_every_bucket_is_a_midchain_bucket(self) -> None:
         """The table only ever names buckets the pool can render."""
         assert set(TOOL_BUCKETS.values()) <= set(MIDCHAIN_BUCKETS)

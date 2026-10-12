@@ -44,6 +44,7 @@ from custom_components.local_openai.const import (
     CONF_RECOMMENDED,
     CONF_REQUEST_BODY_OPTS,
     CONF_REQUEST_BODY_PARAMETERS,
+    CONF_SPEECH_RATE_WPM,
     CONF_STRIP_EMOJIS,
     CONF_TEMPERATURE,
     CONF_WATCHDOG_MAX_EXTRAS,
@@ -160,6 +161,7 @@ class TestRecommendedStep:
         assert data[CONF_RECOMMENDED] is True
         assert CONF_GRACE_MS not in data
         assert CONF_CHECKIN_GAP_MS not in data
+        assert CONF_SPEECH_RATE_WPM not in data
         assert CONF_WATCHDOG_MAX_EXTRAS not in data
 
     async def test_unchecking_recommended_applies_timing_defaults(
@@ -185,6 +187,7 @@ class TestRecommendedStep:
         data = result["data"]
         assert data[CONF_GRACE_MS] == 500
         assert data[CONF_CHECKIN_GAP_MS] == 1500
+        assert data[CONF_SPEECH_RATE_WPM] == 150
         assert data[CONF_WATCHDOG_MAX_EXTRAS] == 2
         # Merged with the recommended-step fields.
         assert data[CONF_MODEL] == "test-model"
@@ -218,6 +221,7 @@ class TestAdvancedStep:
                 {
                     CONF_GRACE_MS: 750,
                     CONF_CHECKIN_GAP_MS: 2000,
+                    CONF_SPEECH_RATE_WPM: 200,
                     CONF_WATCHDOG_MAX_EXTRAS: 5,
                 },
             )
@@ -225,6 +229,7 @@ class TestAdvancedStep:
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["data"][CONF_GRACE_MS] == 750
         assert result["data"][CONF_CHECKIN_GAP_MS] == 2000
+        assert result["data"][CONF_SPEECH_RATE_WPM] == 200
         assert result["data"][CONF_WATCHDOG_MAX_EXTRAS] == 5
 
     async def test_submitted_float_timing_values_are_coerced_to_int(
@@ -250,6 +255,7 @@ class TestAdvancedStep:
                 {
                     CONF_GRACE_MS: 750.0,
                     CONF_CHECKIN_GAP_MS: 2000.0,
+                    CONF_SPEECH_RATE_WPM: 175.0,
                     CONF_WATCHDOG_MAX_EXTRAS: 5.0,
                 },
             )
@@ -260,6 +266,8 @@ class TestAdvancedStep:
         assert data[CONF_GRACE_MS] == 750
         assert isinstance(data[CONF_CHECKIN_GAP_MS], int)
         assert data[CONF_CHECKIN_GAP_MS] == 2000
+        assert isinstance(data[CONF_SPEECH_RATE_WPM], int)
+        assert data[CONF_SPEECH_RATE_WPM] == 175
         assert isinstance(data[CONF_WATCHDOG_MAX_EXTRAS], int)
         assert data[CONF_WATCHDOG_MAX_EXTRAS] == 5
 
@@ -320,6 +328,7 @@ class TestReconfigure:
                         CONF_MODEL: "old-model",
                         CONF_PROMPT: "old prompt",
                         CONF_GRACE_MS: 700,
+                        CONF_SPEECH_RATE_WPM: 180,
                     },
                     "unique_id": None,
                 }
@@ -346,6 +355,9 @@ class TestReconfigure:
         grace_marker = _marker_for(result["data_schema"], CONF_GRACE_MS)
         assert grace_marker is not None
         assert grace_marker.description == {"suggested_value": 700}
+        rate_marker = _marker_for(result["data_schema"], CONF_SPEECH_RATE_WPM)
+        assert rate_marker is not None
+        assert rate_marker.description == {"suggested_value": 180}
 
         result = await flow.async_step_advanced(
             _submitted(
@@ -353,6 +365,7 @@ class TestReconfigure:
                 {
                     CONF_GRACE_MS: 800,
                     CONF_CHECKIN_GAP_MS: 1600,
+                    CONF_SPEECH_RATE_WPM: 200,
                     CONF_WATCHDOG_MAX_EXTRAS: 4,
                 },
             )
@@ -363,6 +376,7 @@ class TestReconfigure:
         updated = entry.subentries[existing.subentry_id]
         assert updated.data[CONF_GRACE_MS] == 800
         assert updated.data[CONF_CHECKIN_GAP_MS] == 1600
+        assert updated.data[CONF_SPEECH_RATE_WPM] == 200
         assert updated.data[CONF_WATCHDOG_MAX_EXTRAS] == 4
         assert updated.data[CONF_MODEL] == "old-model"
 
@@ -393,6 +407,7 @@ class TestReconfigure:
         assert result["step_id"] == "reconfigure"
         assert CONF_GRACE_MS not in existing.data
         assert CONF_CHECKIN_GAP_MS not in existing.data
+        assert CONF_SPEECH_RATE_WPM not in existing.data
         assert CONF_WATCHDOG_MAX_EXTRAS not in existing.data
 
         # Saving through the advanced path then falls back to the default constants.
@@ -407,6 +422,7 @@ class TestReconfigure:
         updated = entry.subentries[existing.subentry_id]
         assert updated.data[CONF_GRACE_MS] == 500
         assert updated.data[CONF_CHECKIN_GAP_MS] == 1500
+        assert updated.data[CONF_SPEECH_RATE_WPM] == 150
         assert updated.data[CONF_WATCHDOG_MAX_EXTRAS] == 2
         assert updated.data[CONF_CHECK_INS_ENABLED] is True
         assert updated.data[CONF_EXPRESSION_TAGS] is False
@@ -437,7 +453,7 @@ class TestTranslations:
     """The conversation subentry translation file."""
 
     def test_translations_expose_streaming_tts_note_and_advanced_fields(self) -> None:
-        """The setup note and the three advanced timing fields are translated."""
+        """The setup note and the four advanced timing fields are translated."""
         translations = json.loads(TRANSLATIONS.read_text())
         conversation = translations["config_subentries"]["conversation"]
         assert conversation["step"]["user"]["description"]
@@ -445,4 +461,8 @@ class TestTranslations:
         advanced = conversation["step"]["advanced"]["data"]
         assert CONF_GRACE_MS in advanced
         assert CONF_CHECKIN_GAP_MS in advanced
+        assert CONF_SPEECH_RATE_WPM in advanced
         assert CONF_WATCHDOG_MAX_EXTRAS in advanced
+
+        descriptions = conversation["step"]["advanced"]["data_description"]
+        assert CONF_SPEECH_RATE_WPM in descriptions

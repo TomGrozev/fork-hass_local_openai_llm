@@ -116,6 +116,8 @@ from .const import (
     CONF_SERVER_NAME,
     CONF_SERVER_OPTIONS,
     CONF_SERVER_TYPE,
+    CONF_SPEECH_RATE_WPM,
+    CONF_SPEECH_RATE_WPM_DEFAULT,
     CONF_STRIP_EMOJIS,
     CONF_TEMPERATURE,
     CONF_VLLM_CONFIG,
@@ -793,6 +795,18 @@ class ConversationFlowHandler(LocalAiSubentryFlowHandler):
                     ),
                 ),
                 vol.Optional(
+                    CONF_SPEECH_RATE_WPM,
+                    default=CONF_SPEECH_RATE_WPM_DEFAULT,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=80,
+                        max=250,
+                        step=5,
+                        mode=NumberSelectorMode.SLIDER,
+                        unit_of_measurement="wpm",
+                    ),
+                ),
+                vol.Optional(
                     CONF_WATCHDOG_MAX_EXTRAS,
                     default=CONF_WATCHDOG_MAX_EXTRAS_DEFAULT,
                 ): NumberSelector(
@@ -887,8 +901,14 @@ class ConversationFlowHandler(LocalAiSubentryFlowHandler):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # The NumberSelector produces floats; timings are whole milliseconds/counts.
-            for key in (CONF_GRACE_MS, CONF_CHECKIN_GAP_MS, CONF_WATCHDOG_MAX_EXTRAS):
+            # The NumberSelector produces floats; timings are whole milliseconds/counts, and the
+            # speaking rate is a whole words-per-minute figure.
+            for key in (
+                CONF_GRACE_MS,
+                CONF_CHECKIN_GAP_MS,
+                CONF_SPEECH_RATE_WPM,
+                CONF_WATCHDOG_MAX_EXTRAS,
+            ):
                 if key in user_input:
                     user_input[key] = int(user_input[key])
             data = {**self._recommended_input, **user_input}

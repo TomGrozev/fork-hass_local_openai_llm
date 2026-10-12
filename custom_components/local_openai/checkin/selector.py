@@ -206,6 +206,12 @@ BUCKET_KEYWORDS: Final[Mapping[str, tuple[str, ...]]] = {
 
 #: HA tool name -> mid-chain fragment bucket. Content, not algorithm; any name not listed
 #: maps to ``generic``. Values must be members of ``pool.MIDCHAIN_BUCKETS``.
+#:
+#: A merged LLM API namespaces each tool as ``{namespace}__{tool}`` (HA's
+#: ``helpers/llm.py`` ``NamespacedTool``, namespace = slugified API name), so a live turn
+#: can hand us ``search-services__search_web``. :func:`bucket_for_tool` strips that prefix
+#: and matches the base name, so this table lists base names only. The ``llm_intents``
+#: entries below are skye-harris' "Tools for Assist" integration.
 TOOL_BUCKETS: Final[Mapping[str, str]] = {
     "HassGetState": "query",
     "GetLiveContext": "query",
@@ -222,12 +228,34 @@ TOOL_BUCKETS: Final[Mapping[str, str]] = {
     "HassListAddItem": "list",
     "HassCalendarGetEvents": "calendar",
     "web_search": "search",
+    # skye-harris/llm_intents ("Tools for Assist") - base names of its registered tools.
+    "search_web": "search",
+    "search_wikipedia": "search",
+    "find_places": "search",
+    "get_route": "search",
+    "search_youtube": "media",
+    "play_video": "media",
+    "get_weather_forecast": "weather",
+    "calendar_day_info": "calendar",
+    "get_device_history_context": "query",
+    "calculate": "generic",
+    "unit_convert": "generic",
 }
+
+#: Merged-API namespace separator in tool names (``{namespace}__{tool}``).
+_NAMESPACE_SEP: Final = "__"
 
 
 def bucket_for_tool(tool_name: str) -> str:
-    """Map an HA tool name to its mid-chain fragment bucket (unknown -> ``"generic"``)."""
-    return TOOL_BUCKETS.get(tool_name, "generic")
+    """
+    Map an HA tool name to its mid-chain fragment bucket (unknown -> ``"generic"``).
+
+    A namespaced (merged-API) name matches on its base name, so
+    ``search-services__search_web`` resolves like ``search_web``. A name without the
+    separator is looked up whole.
+    """
+    base_name = tool_name.rpartition(_NAMESPACE_SEP)[2]
+    return TOOL_BUCKETS.get(base_name, "generic")
 
 
 @dataclass(frozen=True, slots=True)
