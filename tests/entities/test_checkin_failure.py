@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 import openai
 import pytest
 
+from tests.conftest import spoken_texts
+
 from custom_components.local_openai.checkin.pool import (
     DEFAULT_MOOD,
     FAILURE_LINES,
@@ -128,11 +130,6 @@ def _bucket_failures(*, expression_tags: bool = False) -> set[str]:
     }
 
 
-def _content_texts(recorded: list[dict[str, Any]]) -> list[str]:
-    """The assistant content deltas, in the order they were written."""
-    return [delta["content"] for delta in recorded if delta.get("content")]
-
-
 class TestFailureApology:
     """A hard LLM failure is answered with a spoken apology instead of a raised error."""
 
@@ -155,7 +152,7 @@ class TestFailureApology:
         # No HomeAssistantError: the turn ends cleanly with the apology spoken.
         await task
 
-        texts = _content_texts(recorded)
+        texts = spoken_texts(recorded)
         assert len(texts) == 1
         apology = texts[0]
         assert apology in _bucket_failures(expression_tags=True)
@@ -187,4 +184,4 @@ class TestFailureApology:
         ):
             await task
 
-        assert _content_texts(recorded) == []
+        assert spoken_texts(recorded) == []

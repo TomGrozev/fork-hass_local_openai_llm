@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock
 
 from freezegun import freeze_time
 
+from tests.conftest import spoken_texts
+
 from custom_components.local_openai.checkin.pool import (
     DEFAULT_MOOD,
     OPENER_BUCKETS,
@@ -157,11 +159,6 @@ def _rendered_openers(*, expression_tags: bool) -> set[str]:
     }
 
 
-def _content_texts(recorded: list[dict[str, Any]]) -> list[str]:
-    """The assistant content deltas, in the order they were written."""
-    return [delta["content"] for delta in recorded if delta.get("content")]
-
-
 class TestNonEnglishSuppression:
     """A non-English pipeline hears only the streamed answer, however slow the turn."""
 
@@ -190,7 +187,7 @@ class TestNonEnglishSuppression:
             finish.set()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert texts == [ANSWER_TEXT]
             assert not any(
                 text in _rendered_openers(expression_tags=False) for text in texts
@@ -219,7 +216,7 @@ class TestNonEnglishSuppression:
             finish.set()
             await task
 
-            assert _content_texts(recorded) == [tagged]
+            assert spoken_texts(recorded) == [tagged]
 
 
 class TestEnglishStillSpeaks:
@@ -249,7 +246,7 @@ class TestEnglishStillSpeaks:
             finish.set()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert len(texts) == 2
             opener, answer = texts
             assert answer == ANSWER_TEXT

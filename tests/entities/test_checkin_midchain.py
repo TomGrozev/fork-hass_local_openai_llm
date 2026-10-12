@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from freezegun import freeze_time
 
+from tests.conftest import spoken_texts
+
 from custom_components.local_openai import entity as entity_module
 from custom_components.local_openai.checkin.delivery import CheckinDelivery
 from custom_components.local_openai.checkin.pool import (
@@ -271,11 +273,6 @@ def _bucket_openers(bucket: str, *, expression_tags: bool = False) -> set[str]:
     }
 
 
-def _content_texts(recorded: list[dict[str, Any]]) -> list[str]:
-    """The assistant content deltas, in the order they were written."""
-    return [delta["content"] for delta in recorded if delta.get("content")]
-
-
 class TestMidchainBeforeToolStep:
     """A tool round-trip lets a mid-chain fragment out ahead of the next completion."""
 
@@ -309,7 +306,7 @@ class TestMidchainBeforeToolStep:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert len(texts) == 3
             assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
             midchain_text = texts[1]
@@ -348,7 +345,7 @@ class TestMidchainYieldsToTheOpener:
             # turn end -- neither is ever written.
             await task
 
-            assert _content_texts(recorded) == [ANSWER_TEXT]
+            assert spoken_texts(recorded) == [ANSWER_TEXT]
 
 
 class TestMidchainDebounced:
@@ -385,7 +382,7 @@ class TestMidchainDebounced:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             # The opener is exempt from the debounce and is heard; only the mid-chain is dropped.
             assert ANSWER_TEXT in texts
             assert not any(text in _bucket_midchains(TOOL_BUCKET) for text in texts)
@@ -428,7 +425,7 @@ class TestBackToBackStepsCollapse:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             midchains = [
                 text for text in texts if text in _bucket_midchains(TOOL_BUCKET)
             ]
@@ -480,7 +477,7 @@ class TestMidchainFiresAcrossGap:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             midchains = [
                 text for text in texts if text in _bucket_midchains(TOOL_BUCKET)
             ]
@@ -533,7 +530,7 @@ class TestMidchainSlotsFilledFromToolArgs:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             midchain_text, answer = texts[1], texts[2]
             assert answer == ANSWER_TEXT
             assert midchain_text in _bucket_midchains(

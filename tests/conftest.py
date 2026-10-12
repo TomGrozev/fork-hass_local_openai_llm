@@ -258,3 +258,20 @@ class MockConfigSubentry(ConfigSubentry):
         self.title = "Conversation Agent"
         self.data = data
         self.unique_id = None
+
+
+def spoken_texts(recorded: list[dict[str, Any]]) -> list[str]:
+    """The content deltas HA's assist pipeline would hand to streaming TTS, in order.
+
+    Mirrors the chat-log delta listener in ``assist_pipeline/default_pipeline.py``: it keeps
+    the most recent delta ``role`` and speaks content only while that role is ``assistant``,
+    so a role-less delta opening the turn, or following a tool result, is never heard.
+    """
+    texts: list[str] = []
+    role = None
+    for delta in recorded:
+        if delta_role := delta.get("role"):
+            role = delta_role
+        if role == "assistant" and (content := delta.get("content")):
+            texts.append(content)
+    return texts

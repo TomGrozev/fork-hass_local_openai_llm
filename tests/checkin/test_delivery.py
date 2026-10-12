@@ -33,17 +33,16 @@ class _FakeChatLog:
 
 
 class TestEmit:
-    """emit writes one content-only delta through the streaming path."""
+    """emit writes one assistant-attributed content delta through the streaming path."""
 
-    async def test_records_content_only_delta(self) -> None:
-        """The delta carries the text and no ``role`` key, so it joins the open message."""
+    async def test_delta_is_attributed_to_the_assistant(self) -> None:
+        """The delta carries ``role: assistant``; HA's pipeline speaks only assistant content."""
         chat_log = _FakeChatLog()
         delivery = CheckinDelivery(chat_log, ENTITY_ID)
 
         await delivery.emit("hi")
 
-        assert chat_log.received == [{"content": "hi"}]
-        assert "role" not in chat_log.received[0]
+        assert chat_log.received == [{"role": "assistant", "content": "hi"}]
 
     async def test_streams_under_the_turn_entity_id(self) -> None:
         """The delta stream is opened for the entity the delivery wraps."""

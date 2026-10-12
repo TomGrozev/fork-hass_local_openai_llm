@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock
 
 from freezegun import freeze_time
 
+from tests.conftest import spoken_texts
+
 from custom_components.local_openai.checkin.pool import (
     DEFAULT_MOOD,
     OPENER_BUCKETS,
@@ -176,11 +178,6 @@ def _bucket_openers(bucket: str, *, expression_tags: bool) -> set[str]:
     }
 
 
-def _content_texts(recorded: list[dict[str, Any]]) -> list[str]:
-    """The assistant content deltas, in the order they were written."""
-    return [delta["content"] for delta in recorded if delta.get("content")]
-
-
 class TestOpenerGateTiming:
     """The delta order the user hears depends on whether the answer beats the grace window."""
 
@@ -208,7 +205,7 @@ class TestOpenerGateTiming:
             finish.set()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert len(texts) == 2
             opener, answer = texts
             assert answer == ANSWER_TEXT
@@ -249,7 +246,7 @@ class TestOpenerGateTiming:
             finish.set()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert texts == [ANSWER_TEXT]
             assert not any(
                 text in _rendered_openers(expression_tags=False) for text in texts
@@ -279,7 +276,7 @@ class TestOpenerGateTiming:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert texts == [ANSWER_TEXT]
             assert not any(
                 text in _rendered_openers(expression_tags=False) for text in texts
@@ -315,7 +312,7 @@ class TestOpenerOvershootBound:
             finish.set()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert len(texts) == 2
             opener = texts[0]
             # The tag is spoken-stripped, so the length bound applies to the text it carried.

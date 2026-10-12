@@ -56,11 +56,13 @@ class CheckinDelivery:
         """Append ``text`` to the chat log as an assistant delta, then stamp the emission time."""
 
         async def _deltas() -> AsyncIterator[conversation.AssistantContentDeltaDict]:
-            # No ``role`` key, so the delta is content for this stream's own message:
-            # ``async_add_delta_content_stream`` commits it as one ``AssistantContent`` when the
-            # stream ends. One delta per call, so the opener lands as its own entry ahead of the
+            # The ``role`` key is load-bearing: HA's assist pipeline remembers the latest delta
+            # role and hands content to TTS only while it is ``assistant``. A role-less delta at
+            # the start of a turn (no role seen yet) or after a tool result (role
+            # ``tool_result``) is shown in the debug log but never spoken. Each call is its own
+            # stream, so the check-in commits as its own ``AssistantContent`` ahead of the
             # answer's.
-            yield {"content": text}
+            yield {"role": "assistant", "content": text}
 
         stream = self._chat_log.async_add_delta_content_stream(
             self._entity_id, _deltas()

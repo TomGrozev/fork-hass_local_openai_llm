@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from freezegun import freeze_time
 
+from tests.conftest import spoken_texts
+
 from custom_components.local_openai import entity as entity_module
 from custom_components.local_openai.checkin.delivery import CheckinDelivery
 from custom_components.local_openai.checkin.pool import (
@@ -299,11 +301,6 @@ def _rendered_watchdogs(*, expression_tags: bool = False) -> set[str]:
     }
 
 
-def _content_texts(recorded: list[dict[str, Any]]) -> list[str]:
-    """The assistant content deltas, in the order they were written."""
-    return [delta["content"] for delta in recorded if delta.get("content")]
-
-
 class TestWatchdogCappedReassurances:
     """A long silent wait draws capped reassurances, then the answer lands."""
 
@@ -328,14 +325,14 @@ class TestWatchdogCappedReassurances:
             await _drain()
             # The turn is held open with no deltas: nothing is spoken while the opener is still
             # inside its grace window.
-            assert _content_texts(recorded) == []
+            assert spoken_texts(recorded) == []
 
             # The grace window closes with no answer, so the opener speaks.
             async_fire_time_changed(
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS + 1)
             )
             await _drain()
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert len(texts) == 1
             assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
 
@@ -347,7 +344,7 @@ class TestWatchdogCappedReassurances:
                 )
                 await _drain()
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             watchdogs = [t for t in texts if t in _rendered_watchdogs()]
             # Exactly two extras, in order, after the opener; the third gap is silent.
             assert len(watchdogs) == WATCHDOG_MAX_EXTRAS
@@ -359,7 +356,7 @@ class TestWatchdogCappedReassurances:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             watchdogs = [t for t in texts if t in _rendered_watchdogs()]
             assert len(texts) == 4
             assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
@@ -393,7 +390,7 @@ class TestWatchdogSilentWhenAnswered:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert texts == [ANSWER_TEXT]
             assert not any(t in _rendered_watchdogs() for t in texts)
             assert not any(
@@ -431,7 +428,7 @@ class TestWatchdogSilentWhenAnswered:
             )
             await _drain()
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert len(texts) == 1
             assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
             assert not any(t in _rendered_watchdogs() for t in texts)
@@ -440,7 +437,7 @@ class TestWatchdogSilentWhenAnswered:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert texts[-1] == ANSWER_TEXT
             assert not any(t in _rendered_watchdogs() for t in texts)
 
@@ -468,7 +465,7 @@ class TestWatchdogStopsOnceAnswerStarts:
             task = _start_turn(entity, chat_log)
             await _drain()
             # The answer is already streaming - its first visible delta landed - then it stalls.
-            assert ANSWER_TEXT in _content_texts(recorded)
+            assert ANSWER_TEXT in spoken_texts(recorded)
 
             # Several gaps of silence elapse while the answer is stalled: no reassurance, and
             # the opener was suppressed too, because the answer beat its grace window.
@@ -479,7 +476,7 @@ class TestWatchdogStopsOnceAnswerStarts:
                 )
                 await _drain()
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert texts == [ANSWER_TEXT]
             assert not any(t in _rendered_watchdogs() for t in texts)
             assert not any(
@@ -490,7 +487,7 @@ class TestWatchdogStopsOnceAnswerStarts:
             await _drain()
             await task
 
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert texts == [ANSWER_TEXT]
             assert not any(t in _rendered_watchdogs() for t in texts)
 
@@ -526,14 +523,14 @@ class TestWatchdogNeverJumpsTheOpener:
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS)
             )
             await _drain()
-            assert _content_texts(recorded) == []
+            assert spoken_texts(recorded) == []
 
             # Only when the grace window closes does the opener speak.
             async_fire_time_changed(
                 hass, dt_util.utcnow() + timedelta(milliseconds=GRACE_MS * 10 + 1)
             )
             await _drain()
-            texts = _content_texts(recorded)
+            texts = spoken_texts(recorded)
             assert len(texts) == 1
             assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
             assert not any(t in _rendered_watchdogs() for t in texts)
@@ -648,7 +645,7 @@ class TestWatchdogDuringToolWait:
             await _drain()
 
             reassurance = next(
-                (t for t in _content_texts(recorded) if t in _rendered_watchdogs()),
+                (t for t in spoken_texts(recorded) if t in _rendered_watchdogs()),
                 None,
             )
             assert reassurance is not None
