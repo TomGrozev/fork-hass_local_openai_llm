@@ -14,12 +14,14 @@ from custom_components.local_openai.checkin.pool import (
     MIDCHAIN_LINES,
     MOODS,
     OPENER_BUCKETS,
+    OPENER_INTENTS,
     OPENER_LENGTH_MAX,
     OPENER_LENGTH_MIN,
     OPENER_LINES,
     WATCHDOG_LINES,
     Line,
     LinePool,
+    opener_lines,
     render,
     select,
     strip_mood_tags,
@@ -27,9 +29,23 @@ from custom_components.local_openai.checkin.pool import (
 )
 
 
+def _opener_cells() -> list[tuple[str, str, tuple[Line, ...]]]:
+    """Every ``(bucket, cell, lines)`` triple across the opener map."""
+    return [
+        (bucket, cell, lines)
+        for bucket, cells in OPENER_LINES.items()
+        for cell, lines in cells.items()
+    ]
+
+
+def _cell_ids() -> list[str]:
+    """Readable pytest ids for the opener cells."""
+    return [f"{bucket}.{cell}" for bucket, cell, _ in _opener_cells()]
+
+
 def _section_lines() -> list[Line]:
     """Every authored line across all four sections."""
-    lines = [line for bucket in OPENER_LINES.values() for line in bucket]
+    lines = [line for _, _, cell in _opener_cells() for line in cell]
     lines += [line for bucket in MIDCHAIN_LINES.values() for line in bucket]
     lines += list(WATCHDOG_LINES)
     lines += list(FAILURE_LINES)
@@ -48,14 +64,23 @@ class TestPoolIntegrity:
         assert set(MIDCHAIN_LINES) == set(MIDCHAIN_BUCKETS)
 
     @pytest.mark.parametrize("bucket", OPENER_BUCKETS)
-    def test_opener_bucket_has_one_to_three_variants(self, bucket: str) -> None:
-        """Each opener bucket carries between one and three variants."""
-        assert 1 <= len(OPENER_LINES[bucket]) <= 3
+    def test_every_bucket_has_an_any_cell(self, bucket: str) -> None:
+        """Every opener bucket carries an ``any`` cell as its fallback."""
+        assert "any" in OPENER_LINES[bucket]
 
     @pytest.mark.parametrize("bucket", OPENER_BUCKETS)
-    def test_opener_texts_sit_inside_length_band(self, bucket: str) -> None:
+    def test_opener_cell_keys_are_any_or_declared_intents(self, bucket: str) -> None:
+        """A bucket's cell keys are ``any`` plus members of OPENER_INTENTS."""
+        assert set(OPENER_LINES[bucket]) <= {"any", *OPENER_INTENTS}
+
+    @pytest.mark.parametrize(
+        ("bucket", "cell", "lines"), _opener_cells(), ids=_cell_ids()
+    )
+    def test_opener_texts_sit_inside_length_band(
+        self, bucket: str, cell: str, lines: tuple[Line, ...]
+    ) -> None:
         """Every opener text is within the inclusive 60-66 char band."""
-        for line in OPENER_LINES[bucket]:
+        for line in lines:
             assert OPENER_LENGTH_MIN <= len(line.text) <= OPENER_LENGTH_MAX
 
     def test_failure_lines_meet_length_floor(self) -> None:
@@ -66,10 +91,14 @@ class TestPoolIntegrity:
         """No authored line carries a mood outside MOODS."""
         assert all(line.mood in MOODS or line.mood is None for line in _section_lines())
 
-    @pytest.mark.parametrize("bucket", OPENER_BUCKETS)
-    def test_opener_variants_render_distinct_text(self, bucket: str) -> None:
-        """No two opener variants in a bucket speak the same line."""
-        spoken = [render(line) for line in OPENER_LINES[bucket]]
+    @pytest.mark.parametrize(
+        ("bucket", "cell", "lines"), _opener_cells(), ids=_cell_ids()
+    )
+    def test_opener_cell_texts_render_distinct(
+        self, bucket: str, cell: str, lines: tuple[Line, ...]
+    ) -> None:
+        """No two openers in a cell speak the same line."""
+        spoken = [render(line) for line in lines]
         assert len(spoken) == len(set(spoken))
 
     @pytest.mark.parametrize("bucket", MIDCHAIN_BUCKETS)
@@ -78,6 +107,30 @@ class TestPoolIntegrity:
         for slots in (None, {"item": "milk"}):
             spoken = [render(line, slots=slots) for line in MIDCHAIN_LINES[bucket]]
             assert len(spoken) == len(set(spoken))
+
+
+class TestOpenerLines:
+    """opener_lines resolves a bucket-and-intent pair to a cell, with an ``any`` fallback."""
+
+    @pytest.mark.parametrize("intent", OPENER_INTENTS)
+    def test_returns_the_requested_cell_when_present(self, intent: str) -> None:
+        """A bucket that carries the requested cell returns that cell's lines."""
+        bucket = next(b for b in OPENER_BUCKETS if intent in OPENER_LINES[b])
+        assert opener_lines(bucket, intent) is OPENER_LINES[bucket][intent]
+
+    def test_falls_back_to_any_for_a_missing_cell(self) -> None:
+        """A bucket with no cell for the intent falls back to ``any``."""
+        assert "control" not in OPENER_LINES["weather"]
+        assert opener_lines("weather", "control") is OPENER_LINES["weather"]["any"]
+
+    def test_falls_back_to_any_for_none(self) -> None:
+        """A ``None`` intent always resolves to the bucket's ``any`` cell."""
+        assert opener_lines("media", None) is OPENER_LINES["media"]["any"]
+
+    def test_unknown_bucket_raises_key_error(self) -> None:
+        """An unknown bucket surfaces a KeyError."""
+        with pytest.raises(KeyError):
+            opener_lines("nope", None)
 
 
 class TestRender:
@@ -144,8 +197,8 @@ class TestSelect:
     """select draws uniformly while avoiding an immediate repeat."""
 
     def test_avoids_immediate_repeat(self) -> None:
-        """Repeated draws from a three-variant bucket never repeat back to back."""
-        lines = OPENER_LINES["weather"]
+        """Repeated draws from a multi-variant cell never repeat back to back."""
+        lines = OPENER_LINES["weather"]["any"]
         rng = random.Random(1234)
         last: Line | None = None
         for _ in range(50):
@@ -154,9 +207,9 @@ class TestSelect:
             last = current
 
     def test_single_variant_returns_that_line(self) -> None:
-        """A one-variant bucket always yields its only line."""
-        lines = MIDCHAIN_LINES["weather"]
-        assert select(lines, rng=random.Random(0)) is lines[0]
+        """A one-variant sequence always yields its only line."""
+        line = Line("Only one line here.", "calm")
+        assert select((line,), rng=random.Random(0)) is line
 
     def test_all_candidates_equal_last_still_returns_one(self) -> None:
         """When the only line equals last, it is still returned."""
@@ -170,7 +223,7 @@ class TestSelect:
 
     def test_injected_rng_makes_the_draw_deterministic(self) -> None:
         """The same seed produces the same sequence of picks."""
-        lines = OPENER_LINES["lights"]
+        lines = OPENER_LINES["lights"]["any"]
         assert _draw_sequence(lines, seed=99) == _draw_sequence(lines, seed=99)
 
 
@@ -181,6 +234,13 @@ class TestLinePool:
     def test_opener_returns_non_empty(self, bucket: str) -> None:
         """opener yields a non-empty spoken string per bucket."""
         assert LinePool(rng=random.Random(1)).opener(bucket)
+
+    @pytest.mark.parametrize("intent", OPENER_INTENTS)
+    def test_opener_with_intent_draws_from_that_cell(self, intent: str) -> None:
+        """opener with an intent draws a line from that intent's cell."""
+        bucket = next(b for b in OPENER_BUCKETS if intent in OPENER_LINES[b])
+        result = LinePool(rng=random.Random(5)).opener(bucket, intent)
+        assert result in {render(line) for line in OPENER_LINES[bucket][intent]}
 
     @pytest.mark.parametrize("bucket", MIDCHAIN_BUCKETS)
     def test_midchain_returns_non_empty(self, bucket: str) -> None:
@@ -217,6 +277,7 @@ class TestLinePool:
         assert pool.midchain("list", slots={"item": "milk"}) in {
             "Adding milk...",
             "Putting that on your list...",
+            "Noting that down...",
         }
 
     def test_midchain_falls_back_without_slots(self) -> None:
@@ -225,6 +286,7 @@ class TestLinePool:
         assert pool.midchain("list") in {
             "Adding that in...",
             "Putting that on your list...",
+            "Noting that down...",
         }
 
     @pytest.mark.parametrize(
@@ -241,6 +303,11 @@ class TestLinePool:
     ) -> None:
         """DEFAULT_MOOD declares the expected mood for a context."""
         assert DEFAULT_MOOD[context] == expected
+
+    def test_default_mood_covers_every_context(self) -> None:
+        """DEFAULT_MOOD has an entry for every opener and mid-chain bucket."""
+        assert all(f"opener:{bucket}" in DEFAULT_MOOD for bucket in OPENER_BUCKETS)
+        assert all(f"midchain:{bucket}" in DEFAULT_MOOD for bucket in MIDCHAIN_BUCKETS)
 
     def test_opener_and_midchain_default_moods_do_not_collide(self) -> None:
         """Same-named opener and mid-chain contexts hold independent default moods."""

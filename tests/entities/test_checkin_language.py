@@ -155,7 +155,8 @@ def _rendered_openers(*, expression_tags: bool) -> set[str]:
             expression_tags=expression_tags,
         )
         for bucket in OPENER_BUCKETS
-        for line in OPENER_LINES[bucket]
+        for cell in OPENER_LINES[bucket].values()
+        for line in cell
     }
 
 

@@ -27,11 +27,14 @@ from custom_components.local_openai import entity as entity_module
 from custom_components.local_openai.checkin.delivery import CheckinDelivery
 from custom_components.local_openai.checkin.pool import (
     DEFAULT_MOOD,
-    OPENER_LINES,
     WATCHDOG_LINES,
+    opener_lines,
     render,
 )
-from custom_components.local_openai.checkin.selector import select_opener_bucket
+from custom_components.local_openai.checkin.selector import (
+    select_opener_bucket,
+    select_opener_intent,
+)
 from custom_components.local_openai.const import (
     CONF_CHECK_INS_ENABLED,
     CONF_CHECKIN_GAP_MS,
@@ -283,15 +286,17 @@ async def _drain(iterations: int = 25) -> None:
         await asyncio.sleep(0)
 
 
-def _bucket_openers(bucket: str, *, expression_tags: bool = False) -> set[str]:
-    """Every opener text the pool can produce for one bucket."""
+def _bucket_openers(
+    bucket: str, intent: str | None, *, expression_tags: bool = False
+) -> set[str]:
+    """Every opener text the pool can produce for one bucket cell."""
     return {
         render(
             line,
             default_mood=DEFAULT_MOOD[f"opener:{bucket}"],
             expression_tags=expression_tags,
         )
-        for line in OPENER_LINES[bucket]
+        for line in opener_lines(bucket, intent)
     }
 
 
@@ -340,7 +345,9 @@ class TestWatchdogCappedReassurances:
             await _drain()
             texts = spoken_texts(recorded)
             assert len(texts) == 1
-            assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
+            assert texts[0] in _bucket_openers(
+                select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+            )
 
             # The opener's own audio must finish before any reassurance; then each gap of dead
             # air draws one reassurance, up to the cap of two.
@@ -367,7 +374,9 @@ class TestWatchdogCappedReassurances:
             texts = spoken_texts(recorded)
             watchdogs = [t for t in texts if t in _rendered_watchdogs()]
             assert len(texts) == 4
-            assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
+            assert texts[0] in _bucket_openers(
+                select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+            )
             assert texts[1:3] == watchdogs
             assert len(watchdogs) == WATCHDOG_MAX_EXTRAS
             assert texts[-1] == ANSWER_TEXT
@@ -402,7 +411,11 @@ class TestWatchdogSilentWhenAnswered:
             assert texts == [ANSWER_TEXT]
             assert not any(t in _rendered_watchdogs() for t in texts)
             assert not any(
-                t in _bucket_openers(select_opener_bucket(USER_TEXT, ())) for t in texts
+                t
+                in _bucket_openers(
+                    select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+                )
+                for t in texts
             )
 
     async def test_delta_progress_suppresses_the_watchdog(
@@ -438,7 +451,9 @@ class TestWatchdogSilentWhenAnswered:
 
             texts = spoken_texts(recorded)
             assert len(texts) == 1
-            assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
+            assert texts[0] in _bucket_openers(
+                select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+            )
             assert not any(t in _rendered_watchdogs() for t in texts)
 
             gate.set()
@@ -488,7 +503,11 @@ class TestWatchdogStopsOnceAnswerStarts:
             assert texts == [ANSWER_TEXT]
             assert not any(t in _rendered_watchdogs() for t in texts)
             assert not any(
-                t in _bucket_openers(select_opener_bucket(USER_TEXT, ())) for t in texts
+                t
+                in _bucket_openers(
+                    select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+                )
+                for t in texts
             )
 
             gate.set()
@@ -540,7 +559,9 @@ class TestWatchdogNeverJumpsTheOpener:
             await _drain()
             texts = spoken_texts(recorded)
             assert len(texts) == 1
-            assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
+            assert texts[0] in _bucket_openers(
+                select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+            )
             assert not any(t in _rendered_watchdogs() for t in texts)
 
             gate.set()

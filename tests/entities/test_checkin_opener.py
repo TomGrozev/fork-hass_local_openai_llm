@@ -26,9 +26,13 @@ from custom_components.local_openai.checkin.pool import (
     OPENER_BUCKETS,
     OPENER_LENGTH_MAX,
     OPENER_LINES,
+    opener_lines,
     render,
 )
-from custom_components.local_openai.checkin.selector import select_opener_bucket
+from custom_components.local_openai.checkin.selector import (
+    select_opener_bucket,
+    select_opener_intent,
+)
 from custom_components.local_openai.const import (
     CONF_CHECK_INS_ENABLED,
     CONF_EXPRESSION_TAGS,
@@ -158,23 +162,30 @@ async def _drain(iterations: int = 25) -> None:
 
 
 def _rendered_openers(*, expression_tags: bool) -> set[str]:
-    """Every opener text the pool can produce, across all buckets, for one tag setting."""
-    return {
-        opener
-        for bucket in OPENER_BUCKETS
-        for opener in _bucket_openers(bucket, expression_tags=expression_tags)
-    }
-
-
-def _bucket_openers(bucket: str, *, expression_tags: bool) -> set[str]:
-    """Every opener text the pool can produce for one bucket."""
+    """Every opener text the pool can produce, across all buckets and cells, for one tag setting."""
     return {
         render(
             line,
             default_mood=DEFAULT_MOOD[f"opener:{bucket}"],
             expression_tags=expression_tags,
         )
-        for line in OPENER_LINES[bucket]
+        for bucket in OPENER_BUCKETS
+        for cell in OPENER_LINES[bucket].values()
+        for line in cell
+    }
+
+
+def _bucket_openers(
+    bucket: str, intent: str | None, *, expression_tags: bool
+) -> set[str]:
+    """Every opener text the pool can produce for one bucket cell."""
+    return {
+        render(
+            line,
+            default_mood=DEFAULT_MOOD[f"opener:{bucket}"],
+            expression_tags=expression_tags,
+        )
+        for line in opener_lines(bucket, intent)
     }
 
 
@@ -211,7 +222,8 @@ class TestOpenerGateTiming:
             assert answer == ANSWER_TEXT
 
             bucket = select_opener_bucket(USER_TEXT, ())
-            assert opener in _bucket_openers(bucket, expression_tags=False)
+            intent = select_opener_intent(USER_TEXT)
+            assert opener in _bucket_openers(bucket, intent, expression_tags=False)
             assert any(
                 isinstance(content, conversation.AssistantContent)
                 and content.content == opener
@@ -327,8 +339,7 @@ class TestOpenerOvershootBound:
             # Worst case over the whole pool, measuring the tag-stripped spoken text.
             worst = max(
                 len(_MOOD_TAG.sub("", opener))
-                for bucket in OPENER_BUCKETS
-                for opener in _bucket_openers(bucket, expression_tags=True)
+                for opener in _rendered_openers(expression_tags=True)
             )
             assert worst <= OPENER_LENGTH_MAX
             assert (

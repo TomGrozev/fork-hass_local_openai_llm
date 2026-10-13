@@ -256,7 +256,9 @@ arrives.
 
 - **Opener** — a short, natural line ("Let me take a look at that for you…") spoken within a few
   hundred milliseconds, chosen to be contextual where possible ("checking the weather") from your
-  request and the entities exposed to Assist.
+  request and the entities exposed to Assist, and matched to both the topic and what you're
+  asking it to do — checking something, changing something, or playing something — so "set your
+  volume" gets a volume line, not a music one.
 - **Mid-chain check-ins** — brief updates ("okay, checking that now…") before each tool step, so
   multi-step requests don't fall silent part-way through.
 - **Watchdog reassurance** — if a tool or the model takes a long time, occasional reassurance

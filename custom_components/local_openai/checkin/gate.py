@@ -26,13 +26,14 @@ class OpenerGate:
     the opener task body.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one field per piece of per-turn context
         self,
         *,
         grace_s: float,
         pool: LinePool,
         delivery: CheckinDelivery,
         bucket: str,
+        intent: str | None,
         expression_tags: bool,
     ) -> None:
         """Configure the gate for one turn's opener."""
@@ -40,6 +41,7 @@ class OpenerGate:
         self._pool = pool
         self._delivery = delivery
         self._bucket = bucket
+        self._intent = intent
         self._expression_tags = expression_tags
         self._answer_started = asyncio.Event()
 
@@ -58,7 +60,9 @@ class OpenerGate:
             await asyncio.wait_for(self._answer_started.wait(), timeout=self._grace_s)
         except TimeoutError:
             await self._delivery.emit(
-                self._pool.opener(self._bucket, expression_tags=self._expression_tags)
+                self._pool.opener(
+                    self._bucket, self._intent, expression_tags=self._expression_tags
+                )
             )
             return True
         return False

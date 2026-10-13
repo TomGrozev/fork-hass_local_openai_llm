@@ -46,7 +46,11 @@ from .checkin.exposure import exposed_entities
 from .checkin.gate import OpenerGate
 from .checkin.language import is_english
 from .checkin.pool import LinePool, strip_mood_tags_streaming
-from .checkin.selector import bucket_for_tool, select_opener_bucket
+from .checkin.selector import (
+    bucket_for_tool,
+    select_opener_bucket,
+    select_opener_intent,
+)
 from .checkin.watchdog import Watchdog
 from .const import (
     CONF_CHAT_TEMPLATE_KWARGS,
@@ -883,6 +887,7 @@ class LocalAiEntity(Entity):
                 bucket=select_opener_bucket(
                     user_input.text, exposed_entities(self.hass)
                 ),
+                intent=select_opener_intent(user_input.text),
                 expression_tags=expression_tags,
             )
             answer_started = gate.answer_started

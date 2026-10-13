@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.local_openai.checkin.pool import MIDCHAIN_BUCKETS
+from custom_components.local_openai.checkin.pool import MIDCHAIN_BUCKETS, OPENER_INTENTS
 from custom_components.local_openai.checkin.selector import (
     _KEYWORD_INDEX,
     DOMAIN_BUCKETS,
     ExposedEntity,
+    INTENT_KEYWORDS,
     TOOL_BUCKETS,
     _exposed_name_index,
     _normalize,
     bucket_for_tool,
     select_opener_bucket,
+    select_opener_intent,
 )
 
 
@@ -236,3 +238,77 @@ class TestBucketForTool:
     def test_every_bucket_is_a_midchain_bucket(self) -> None:
         """The table only ever names buckets the pool can render."""
         assert set(TOOL_BUCKETS.values()) <= set(MIDCHAIN_BUCKETS)
+
+
+class TestVolumeTopic:
+    """Volume is its own topic, split out of media."""
+
+    def test_set_volume_utterance_picks_volume(self) -> None:
+        """A volume command lands in the volume bucket, not media."""
+        assert select_opener_bucket("set your volume to 3", ()) == "volume"
+
+    def test_volume_question_picks_volume(self) -> None:
+        """A volume question lands in the volume bucket."""
+        assert select_opener_bucket("what's the volume", ()) == "volume"
+
+    @pytest.mark.parametrize("word", ["louder", "quieter", "softer", "mute", "unmute"])
+    def test_volume_words_pick_volume(self, word: str) -> None:
+        """Each volume keyword resolves to the volume bucket."""
+        assert select_opener_bucket(word, ()) == "volume"
+
+    def test_music_utterance_still_picks_media(self) -> None:
+        """Removing volume from media left the remaining music keywords on media."""
+        assert select_opener_bucket("play some jazz", ()) == "media"
+
+
+class TestIntentKeywords:
+    """The intent table is the single source for the intents the pool can render."""
+
+    def test_keys_are_exactly_the_pool_intents(self) -> None:
+        """INTENT_KEYWORDS declares exactly ``pool.OPENER_INTENTS``."""
+        assert set(INTENT_KEYWORDS) == set(OPENER_INTENTS)
+
+
+class TestIntentSelection:
+    """select_opener_intent reads what the user wants done, not just the topic."""
+
+    @pytest.mark.parametrize(
+        ("utterance", "intent"),
+        [
+            pytest.param("set your volume to 3", "control", id="set-volume"),
+            pytest.param("what's the volume", "query", id="volume-question"),
+            pytest.param("play some jazz", "play", id="play-music"),
+            pytest.param("pause the music", "control", id="pause"),
+            pytest.param("is the front door locked", "query", id="locked-question"),
+            pytest.param("can you turn off the kitchen lights", "control", id="polite"),
+            pytest.param("turn it up", "control", id="turn-it-up"),
+            pytest.param("could you please set the volume", "control", id="please-set"),
+            pytest.param("whats the weather like", "query", id="whats-weather"),
+            pytest.param("tell me the time", "query", id="tell-me"),
+            pytest.param("queue up some music", "play", id="queue"),
+            pytest.param("put on the radio", "play", id="put-on"),
+        ],
+    )
+    def test_utterance_picks_its_intent(self, utterance: str, intent: str) -> None:
+        """The earliest whole-token intent word decides."""
+        assert select_opener_intent(utterance) == intent
+
+    def test_politeness_does_not_read_as_query(self) -> None:
+        """Request framing is not an intent word, so the verb decides."""
+        assert select_opener_intent("would you turn on the light") == "control"
+
+    def test_no_intent_word_is_none(self) -> None:
+        """An utterance with no intent word yields ``None``."""
+        assert select_opener_intent("hello there") is None
+
+    def test_empty_utterance_is_none(self) -> None:
+        """An utterance that normalizes to nothing yields ``None``."""
+        assert select_opener_intent("?!") is None
+
+    def test_word_containing_a_keyword_does_not_match_it(self) -> None:
+        """A word that merely contains an intent word must not match it."""
+        assert select_opener_intent("player") is None
+
+    def test_earliest_hit_wins_over_a_later_longer_phrase(self) -> None:
+        """The earliest whole-token hit wins even when a longer phrase follows."""
+        assert select_opener_intent("turn it on and play music") == "control"

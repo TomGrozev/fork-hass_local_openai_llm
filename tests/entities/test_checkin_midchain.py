@@ -28,13 +28,14 @@ from custom_components.local_openai.checkin.delivery import CheckinDelivery
 from custom_components.local_openai.checkin.pool import (
     DEFAULT_MOOD,
     MIDCHAIN_LINES,
-    OPENER_LINES,
     LinePool,
+    opener_lines,
     render,
 )
 from custom_components.local_openai.checkin.selector import (
     bucket_for_tool,
     select_opener_bucket,
+    select_opener_intent,
 )
 from custom_components.local_openai.const import (
     CONF_CHECK_INS_ENABLED,
@@ -297,16 +298,37 @@ def _bucket_midchains(
     }
 
 
-def _bucket_openers(bucket: str, *, expression_tags: bool = False) -> set[str]:
-    """Every opener text the pool can produce for one bucket."""
+def _bucket_openers(
+    bucket: str, intent: str | None, *, expression_tags: bool = False
+) -> set[str]:
+    """Every opener text the pool can produce for one bucket cell."""
     return {
         render(
             line,
             default_mood=DEFAULT_MOOD[f"opener:{bucket}"],
             expression_tags=expression_tags,
         )
-        for line in OPENER_LINES[bucket]
+        for line in opener_lines(bucket, intent)
     }
+
+
+def _seed_drawing_the_item_line() -> int:
+    """
+    Return an RNG seed whose (opener, midchain) draw sequence lands on the list ``{item}`` line.
+
+    The pool is content, so no fixed seed is durable. This searches for one whose second draw -
+    after the opener consumes the first - fills the ``{item}`` blank, so the test can assert the
+    tool's value is spoken rather than a slot-free line.
+    """
+    bucket = select_opener_bucket(USER_TEXT, ())
+    intent = select_opener_intent(USER_TEXT)
+    for seed in range(200):
+        pool = LinePool(rng=random.Random(seed))
+        pool.opener(bucket, intent)
+        if "milk" in pool.midchain(LIST_TOOL_BUCKET, slots={"item": "milk"}):
+            return seed
+    msg = "no seed draws the list bucket's {item} line"
+    raise AssertionError(msg)
 
 
 class TestMidchainBeforeToolStep:
@@ -345,7 +367,9 @@ class TestMidchainBeforeToolStep:
 
             texts = spoken_texts(recorded)
             assert len(texts) == 3
-            assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
+            assert texts[0] in _bucket_openers(
+                select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+            )
             midchain_text = texts[1]
             assert midchain_text in _bucket_midchains(TOOL_BUCKET)
             assert texts[2] == ANSWER_TEXT
@@ -427,7 +451,9 @@ class TestMidchainDebounced:
             assert ANSWER_TEXT in texts
             assert not any(text in _bucket_midchains(TOOL_BUCKET) for text in texts)
             opener_bucket = select_opener_bucket(USER_TEXT, ())
-            assert texts[0] in _bucket_openers(opener_bucket)
+            assert texts[0] in _bucket_openers(
+                opener_bucket, select_opener_intent(USER_TEXT)
+            )
 
 
 class TestBackToBackStepsCollapse:
@@ -541,8 +567,11 @@ class TestMidchainSlotsFilledFromToolArgs:
             clock = _EmissionClock()
             _inject_clock(monkeypatch, clock)
             entity = _make_entity(hass, mock_config_entry)
-            # Seed the pool so the list bucket draws its ``{item}`` line first.
-            entity._checkin_pool = LinePool(rng=random.Random(1))
+            # Seed the pool so the list bucket draws its ``{item}`` line (the opener consumes
+            # the first draw), making the value's presence below observable.
+            entity._checkin_pool = LinePool(
+                rng=random.Random(_seed_drawing_the_item_line())
+            )
             gate = asyncio.Event()
             _script_stream(
                 entity,
@@ -578,8 +607,8 @@ class TestMidchainSlotsFilledFromToolArgs:
             assert midchain_text in _bucket_midchains(
                 LIST_TOOL_BUCKET, slots={"item": "milk"}
             )
-            # The blank is filled, not the slot-free fallback.
-            assert midchain_text == "Adding milk..."
+            # The tool's `item` argument is spoken, not the slot-free fallback.
+            assert "milk" in midchain_text
 
 
 class TestMidchainWaitsOutTheModelsAudio:
@@ -622,6 +651,8 @@ class TestMidchainWaitsOutTheModelsAudio:
             await task
 
             texts = spoken_texts(recorded)
-            assert texts[0] in _bucket_openers(select_opener_bucket(USER_TEXT, ()))
+            assert texts[0] in _bucket_openers(
+                select_opener_bucket(USER_TEXT, ()), select_opener_intent(USER_TEXT)
+            )
             assert not any(text in _bucket_midchains(TOOL_BUCKET) for text in texts)
             assert texts[-1] == ANSWER_TEXT

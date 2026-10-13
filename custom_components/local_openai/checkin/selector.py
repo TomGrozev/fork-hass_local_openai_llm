@@ -1,5 +1,5 @@
 """
-Opener contextual selector: pick one of the 11 opener buckets from data in hand.
+Opener contextual selector: pick one of the 12 opener buckets plus an intent from data in hand.
 
 Pure - no model, network, or I/O, and sub-millisecond. Two local signals, both computed from
 the utterance before the LLM runs:
@@ -16,6 +16,12 @@ The score is ``W_ENTITY * (#entity-name hits) + sum(len(phrase) for each keyword
 characters; the bucket with the highest score wins; if nothing clears ``MATCH_MIN`` the result is
 the ``generic`` bucket. Equal scores break by earliest hit position, then longest single matched
 phrase, then ``TIEBREAK_ORDER``.
+
+Alongside the topic, a third local signal - a pure keyword **intent axis** (``INTENT_KEYWORDS``,
+:func:`select_opener_intent`) - says *what the user wants done*: ``query`` (ask), ``control``
+(change), or ``play`` (start media). It reuses the same whole-token windowing and reports the
+earliest hit, so request framing ("can you", "please") never reads as ``query``. No hit is
+``None``, and the caller falls back to the bucket's ``any`` opener cell.
 
 Everything except the ranking decision - the tables, normalization, and the precomputed index
 builders below - is mechanical; ``_select_bucket`` holds the matching + scoring decision.
@@ -47,6 +53,7 @@ TIEBREAK_ORDER: Final[tuple[str, ...]] = (
     "covers",
     "climate",
     "lights",
+    "volume",
     "media",
     "scenes",
     "timers",
@@ -124,8 +131,6 @@ BUCKET_KEYWORDS: Final[Mapping[str, tuple[str, ...]]] = {
         "song",
         "songs",
         "playlist",
-        "volume",
-        "mute",
         "pause",
         "resume",
         "skip",
@@ -135,6 +140,16 @@ BUCKET_KEYWORDS: Final[Mapping[str, tuple[str, ...]]] = {
         "podcast",
         "radio",
         "jazz",
+    ),
+    "volume": (
+        "volume",
+        "louder",
+        "quieter",
+        "softer",
+        "mute",
+        "unmute",
+        "muted",
+        "unmuted",
     ),
     "covers": (
         "blinds",
@@ -204,6 +219,74 @@ BUCKET_KEYWORDS: Final[Mapping[str, tuple[str, ...]]] = {
     ),
 }
 
+#: Curated intent keyword/phrase table - content, not algorithm. Keys are exactly the members of
+#: ``pool.OPENER_INTENTS``. Deliberately excludes request framing ("can you", "could you",
+#: "please", "would you"), so a polite command reads as its verb ("turn", "set"), not ``query``.
+INTENT_KEYWORDS: Final[Mapping[str, tuple[str, ...]]] = {
+    "query": (
+        "what",
+        "whats",
+        "is",
+        "are",
+        "how",
+        "when",
+        "which",
+        "who",
+        "did",
+        "does",
+        "do",
+        "tell me",
+        "check",
+        "any",
+    ),
+    "control": (
+        "turn",
+        "switch",
+        "set",
+        "make",
+        "change",
+        "dim",
+        "brighten",
+        "open",
+        "close",
+        "lock",
+        "unlock",
+        "raise",
+        "lower",
+        "increase",
+        "decrease",
+        "arm",
+        "disarm",
+        "start",
+        "stop",
+        "cancel",
+        "pause",
+        "resume",
+        "skip",
+        "mute",
+        "unmute",
+        "add",
+        "louder",
+        "quieter",
+    ),
+    "play": (
+        "play",
+        "put on",
+        "listen to",
+        "queue",
+    ),
+}
+
+#: Fixed order among intents for an exact position-and-length tie. The table shares no phrase
+#: between intents, so this only makes a future duplicate resolve deterministically; it follows
+#: ``pool.OPENER_INTENTS``.
+INTENT_ORDER: Final[tuple[str, ...]] = ("query", "control", "play")
+
+#: ``INTENT_ORDER`` inverted once at import, so the selector never rebuilds it per call.
+INTENT_RANK: Final[Mapping[str, int]] = {
+    intent: index for index, intent in enumerate(INTENT_ORDER)
+}
+
 #: HA tool name -> mid-chain fragment bucket. Content, not algorithm; any name not listed
 #: maps to ``generic``. Values must be members of ``pool.MIDCHAIN_BUCKETS``.
 #:
@@ -222,9 +305,15 @@ TOOL_BUCKETS: Final[Mapping[str, str]] = {
     "HassSetPosition": "control",
     "HassClimateSetTemperature": "climate",
     "HassClimateGetTemperature": "climate",
-    "HassMediaPlay": "media",
-    "HassMediaPause": "media",
-    "HassSetVolume": "media",
+    "HassMediaSearchAndPlay": "media",
+    "HassMediaPause": "playback",
+    "HassMediaUnpause": "playback",
+    "HassMediaNext": "playback",
+    "HassMediaPrevious": "playback",
+    "HassSetVolume": "volume",
+    "HassSetVolumeRelative": "volume",
+    "HassMediaPlayerMute": "volume",
+    "HassMediaPlayerUnmute": "volume",
     "HassListAddItem": "list",
     "HassCalendarGetEvents": "calendar",
     "web_search": "search",
@@ -333,6 +422,27 @@ def _build_keyword_index() -> Mapping[tuple[str, ...], tuple[str, ...]]:
 _KEYWORD_INDEX: Final[Mapping[tuple[str, ...], tuple[str, ...]]] = (
     _build_keyword_index()
 )
+
+
+def _build_intent_index() -> Mapping[tuple[str, ...], tuple[str, ...]]:
+    """
+    Build the intent phrase index once at import: normalized phrase tokens to their intents.
+
+    Mirrors :func:`_build_keyword_index`; keys are token tuples so lookup is whole-token by
+    construction, and values list each intent that declares the phrase, once.
+    """
+    index: dict[tuple[str, ...], list[str]] = {}
+    for intent, phrases in INTENT_KEYWORDS.items():
+        for phrase in phrases:
+            key = _normalize(phrase).tokens
+            intents = index.setdefault(key, [])
+            if intent not in intents:
+                intents.append(intent)
+    return {key: tuple(intents) for key, intents in index.items()}
+
+
+#: Precomputed at load; the intent phrase index never changes after import.
+_INTENT_INDEX: Final[Mapping[tuple[str, ...], tuple[str, ...]]] = _build_intent_index()
 
 
 @lru_cache(maxsize=64)
@@ -450,3 +560,50 @@ def select_opener_bucket(
     return _select_bucket(
         normalized, keyword_index=_KEYWORD_INDEX, name_index=name_index
     )
+
+
+def _select_intent(
+    normalized: _Normalized, *, intent_index: Mapping[tuple[str, ...], tuple[str, ...]]
+) -> str | None:
+    """
+    Return the opener intent for a normalized utterance, or ``None`` when nothing matches.
+
+    Slides a window of ``intent_index`` tokens over the utterance; keys are token tuples, so a
+    match is whole-token by construction (``("play",)`` never matches ``player``). Each hit is
+    ranked by ``(earliest start, longer matched phrase, ``INTENT_RANK``)`` and the minimum wins:
+    the **earliest whole-token hit** takes the intent, and at the same start position the
+    **longer phrase** wins. No hit is ``None``.
+
+    Worked examples (no entities, no I/O; every intent word is a whole token):
+
+    - ``"can you turn off the kitchen lights"`` -> ``"control"``: request framing ("can you") is
+      not an intent phrase, so ``turn`` at token 2 decides.
+    - ``"what's the volume"`` -> ``"query"``: ``what's`` normalizes to ``whats``, a query word.
+    - ``"set your volume to 3"`` -> ``"control"``: ``set`` at token 0.
+    - ``"play some jazz"`` -> ``"play"``: ``play`` at token 0.
+    - ``"pause the music"`` -> ``"control"``: ``pause`` at token 0.
+    - ``"is the front door locked"`` -> ``"query"``: ``is`` at token 0.
+    - ``"hello there"`` -> ``None``: no intent word appears.
+    """
+    tokens = normalized.tokens
+    best: tuple[int, int, int] | None = None
+    best_intent: str | None = None
+    for phrase, intents in intent_index.items():
+        length = _phrase_length(phrase)
+        for start in _window_starts(tokens, phrase):
+            for intent in intents:
+                candidate = (start, -length, INTENT_RANK.get(intent, len(INTENT_RANK)))
+                if best is None or candidate < best:
+                    best = candidate
+                    best_intent = intent
+    return best_intent
+
+
+def select_opener_intent(utterance: str) -> str | None:
+    """
+    Return the opener intent for ``utterance``: ``"query"``, ``"control"``, ``"play"`` or ``None``.
+
+    Pure: no model, network, or I/O. The intent is a second, independent axis beside
+    :func:`select_opener_bucket`; a ``None`` tells the caller to use the bucket's ``any`` cell.
+    """
+    return _select_intent(_normalize(utterance), intent_index=_INTENT_INDEX)
